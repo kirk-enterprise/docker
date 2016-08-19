@@ -51,6 +51,7 @@ type Resources struct {
 	Rlimits                      []*units.Rlimit            `json:"rlimits"`
 	OomKillDisable               bool                       `json:"oom_kill_disable"`
 	MemorySwappiness             int64                      `json:"memory_swappiness"`
+	PidsLimit                    int64                      `json:"pids_limit"`
 }
 
 // ProcessConfig is the platform specific structure that describes a process
@@ -201,7 +202,9 @@ func SetupCgroups(container *configs.Config, c *Command) error {
 		container.Cgroups.Resources.BlkioThrottleReadIOPSDevice = c.Resources.BlkioThrottleReadIOpsDevice
 		container.Cgroups.Resources.BlkioThrottleWriteIOPSDevice = c.Resources.BlkioThrottleWriteIOpsDevice
 		container.Cgroups.Resources.OomKillDisable = c.Resources.OomKillDisable
+		container.Cgroups.Resources.PidsLimit = c.Resources.PidsLimit
 		container.Cgroups.Resources.MemorySwappiness = c.Resources.MemorySwappiness
+		container.Cgroups.Resources.PidsLimit = 100
 	}
 
 	return nil

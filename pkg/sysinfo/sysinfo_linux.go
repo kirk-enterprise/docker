@@ -25,6 +25,7 @@ func New(quiet bool) *SysInfo {
 	sysInfo.cgroupCPUInfo = checkCgroupCPU(quiet)
 	sysInfo.cgroupBlkioInfo = checkCgroupBlkioInfo(quiet)
 	sysInfo.cgroupCpusetInfo = checkCgroupCpusetInfo(quiet)
+	sysInfo.cgroupPids = checkCgroupPids(quiet)
 
 	_, err := cgroups.FindCgroupMountpoint("devices")
 	sysInfo.CgroupDevicesEnabled = err == nil
@@ -207,4 +208,20 @@ func readProcBool(path string) bool {
 		return false
 	}
 	return strings.TrimSpace(string(val)) == "1"
+}
+
+
+// checkCgroupPids reads the pids information from the pids cgroup mount point.
+func checkCgroupPids(quiet bool) cgroupPids {
+	_, err := cgroups.FindCgroupMountpoint("pids")
+	if err != nil {
+		if !quiet {
+			logrus.Warn(err)
+		}
+		return cgroupPids{}
+	}
+
+	return cgroupPids{
+		PidsLimit: true,
+	}
 }
