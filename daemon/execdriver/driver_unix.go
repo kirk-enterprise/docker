@@ -204,7 +204,6 @@ func SetupCgroups(container *configs.Config, c *Command) error {
 		container.Cgroups.Resources.OomKillDisable = c.Resources.OomKillDisable
 		container.Cgroups.Resources.PidsLimit = c.Resources.PidsLimit
 		container.Cgroups.Resources.MemorySwappiness = c.Resources.MemorySwappiness
-		container.Cgroups.Resources.PidsLimit = 100
 	}
 
 	return nil
