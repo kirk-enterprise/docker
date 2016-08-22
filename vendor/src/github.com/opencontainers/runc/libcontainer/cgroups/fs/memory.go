@@ -56,39 +56,19 @@ func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
 
 func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 	if cgroup.Resources.Memory != 0 {
-		if err := writeFile(path, "memory.limit_in_bytes", strconv.FormatInt(cgroup.Resources.Memory, 10)); err != nil {
+		if err := writeFile(path, "memory.max", strconv.FormatInt(cgroup.Resources.Memory, 10)); err != nil {
 			return err
 		}
 	}
 	if cgroup.Resources.MemoryReservation != 0 {
-		if err := writeFile(path, "memory.soft_limit_in_bytes", strconv.FormatInt(cgroup.Resources.MemoryReservation, 10)); err != nil {
+		if err := writeFile(path, "memory.low", strconv.FormatInt(cgroup.Resources.MemoryReservation, 10)); err != nil {
 			return err
 		}
 	}
 	if cgroup.Resources.MemorySwap > 0 {
-		if err := writeFile(path, "memory.memsw.limit_in_bytes", strconv.FormatInt(cgroup.Resources.MemorySwap, 10)); err != nil {
+		if err := writeFile(path, "memory.swap.max", strconv.FormatInt(cgroup.Resources.MemorySwap, 10)); err != nil {
 			return err
 		}
-	}
-	if cgroup.Resources.KernelMemory > 0 {
-		if err := writeFile(path, "memory.kmem.limit_in_bytes", strconv.FormatInt(cgroup.Resources.KernelMemory, 10)); err != nil {
-			return err
-		}
-	}
-
-	if cgroup.Resources.OomKillDisable {
-		if err := writeFile(path, "memory.oom_control", "1"); err != nil {
-			return err
-		}
-	}
-	if cgroup.Resources.MemorySwappiness >= 0 && cgroup.Resources.MemorySwappiness <= 100 {
-		if err := writeFile(path, "memory.swappiness", strconv.FormatInt(cgroup.Resources.MemorySwappiness, 10)); err != nil {
-			return err
-		}
-	} else if cgroup.Resources.MemorySwappiness == -1 {
-		return nil
-	} else {
-		return fmt.Errorf("invalid value:%d. valid memory swappiness range is 0-100", cgroup.Resources.MemorySwappiness)
 	}
 
 	return nil
@@ -117,23 +97,18 @@ func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {
 		}
 		stats.MemoryStats.Stats[t] = v
 	}
-	stats.MemoryStats.Cache = stats.MemoryStats.Stats["cache"]
+	stats.MemoryStats.Cache = stats.MemoryStats.Stats["file"]
 
 	memoryUsage, err := getMemoryData(path, "")
 	if err != nil {
 		return err
 	}
 	stats.MemoryStats.Usage = memoryUsage
-	swapUsage, err := getMemoryData(path, "memsw")
+	swapUsage, err := getMemoryData(path, "swap")
 	if err != nil {
 		return err
 	}
 	stats.MemoryStats.SwapUsage = swapUsage
-	kernelUsage, err := getMemoryData(path, "kmem")
-	if err != nil {
-		return err
-	}
-	stats.MemoryStats.KernelUsage = kernelUsage
 
 	return nil
 }
@@ -154,9 +129,7 @@ func getMemoryData(path, name string) (cgroups.MemoryData, error) {
 	if name != "" {
 		moduleName = strings.Join([]string{"memory", name}, ".")
 	}
-	usage := strings.Join([]string{moduleName, "usage_in_bytes"}, ".")
-	maxUsage := strings.Join([]string{moduleName, "max_usage_in_bytes"}, ".")
-	failcnt := strings.Join([]string{moduleName, "failcnt"}, ".")
+	usage := strings.Join([]string{moduleName, "current"}, ".")
 
 	value, err := getCgroupParamUint(path, usage)
 	if err != nil {
@@ -166,22 +139,6 @@ func getMemoryData(path, name string) (cgroups.MemoryData, error) {
 		return cgroups.MemoryData{}, fmt.Errorf("failed to parse %s - %v", usage, err)
 	}
 	memoryData.Usage = value
-	value, err = getCgroupParamUint(path, maxUsage)
-	if err != nil {
-		if moduleName != "memory" && os.IsNotExist(err) {
-			return cgroups.MemoryData{}, nil
-		}
-		return cgroups.MemoryData{}, fmt.Errorf("failed to parse %s - %v", maxUsage, err)
-	}
-	memoryData.MaxUsage = value
-	value, err = getCgroupParamUint(path, failcnt)
-	if err != nil {
-		if moduleName != "memory" && os.IsNotExist(err) {
-			return cgroups.MemoryData{}, nil
-		}
-		return cgroups.MemoryData{}, fmt.Errorf("failed to parse %s - %v", failcnt, err)
-	}
-	memoryData.Failcnt = value
 
 	return memoryData, nil
 }

@@ -57,6 +57,24 @@ func FindCgroupMountpointAndRoot(subsystem string) (string, string, error) {
 	for scanner.Scan() {
 		txt := scanner.Text()
 		fields := strings.Split(txt, " ")
+		cgroupType := fields[len(fields)-3]
+		if cgroupType == "cgroup2" {
+			if subsystem != "memory" && subsystem != "blkio" {
+				continue
+			}
+			if subsystem == "blkio" {
+				subsystem = "io"
+			}
+			path := fields[4]
+			if PathExists(path) {
+				cgroup_control := "+" + subsystem
+				if err := ioutil.WriteFile(filepath.Join(path, "cgroup.subtree_control"),
+					[]byte("subsystem"), 0700); err != nil {
+					return "", "", err
+				}
+			}
+			return fields[4], fields[3], nil
+		}
 		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
 			if opt == subsystem {
 				return fields[4], fields[3], nil
