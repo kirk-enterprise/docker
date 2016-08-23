@@ -22,20 +22,32 @@ func (s *MemoryGroup) Name() string {
 }
 
 func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
+	fmt.Println("Enter MemoryGroup Apply")
 	path, err := d.path("memory")
-	if err != nil && !cgroups.IsNotFound(err) {
+	if err != nil && !cgroups.IsNotFound(err) && !cgroups.IsV2Error(err) {
+		fmt.Println("MemoryGroup Apply path path:", path, "err:", err)
 		return err
 	}
+	fmt.Println("MemoryGroup After path path:", path)
 	if memoryAssigned(d.config) {
 		if path != "" {
-			if err := os.MkdirAll(path, 0755); err != nil {
-				return err
+			if subErr := os.MkdirAll(path, 0755); subErr != nil {
+				fmt.Println("MemoryGroup Apply MkdirAll path:", path, "err:", subErr)
+				return subErr
+			}
+			if cgroups.IsV2Error(err) {
+				if subErr := d.addControllerForV2("memory", path); subErr != nil {
+					return subErr
+				}
 			}
 		}
+		fmt.Println("MemoryGroup After MkdirAll path:", path)
 
 		if err := s.Set(path, d.config); err != nil {
+			fmt.Println("MemoryGroup Apply Set path:", path, "err:", err)
 			return err
 		}
+		fmt.Println("MemoryGroup After Set path:", path)
 	}
 
 	defer func() {
@@ -47,7 +59,8 @@ func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
 	// We need to join memory cgroup after set memory limits, because
 	// kmem.limit_in_bytes can only be set when the cgroup is empty.
 	_, err = d.join("memory")
-	if err != nil && !cgroups.IsNotFound(err) {
+	if err != nil && !cgroups.IsNotFound(err) && !cgroups.IsV2Error(err) {
+		fmt.Println("MemoryGroup Apply join path:", path, "err:", err)
 		return err
 	}
 
@@ -75,7 +88,11 @@ func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 }
 
 func (s *MemoryGroup) Remove(d *cgroupData) error {
-	return removePath(d.path("memory"))
+	path, err := d.path("memory")
+	if cgroups.IsV2Error(err) {
+		err = nil
+	}
+	return removePath(path, err)
 }
 
 func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {

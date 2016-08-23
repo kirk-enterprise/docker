@@ -18,6 +18,33 @@ import (
 
 const cgroupNamePrefix = "name="
 
+func checkIfCgroupV2(subsystem, txt string) bool {
+	fields := strings.Split(txt, " ")
+	if len(fields) != 10 {
+		return false
+	}
+	cgroupType := fields[len(fields)-3]
+	if cgroupType != "cgroup2" {
+		return false
+	}
+	path := fields[4]
+	if !PathExists(path) {
+		return false
+	}
+	if subsystem == "blkio" {
+		subsystem = "io"
+	}
+	ret, err := ioutil.ReadFile(filepath.Join(path, "cgroup.controllers"))
+	if err != nil {
+		return false
+	}
+	controllers := string(ret)
+	if !strings.Contains(controllers, subsystem) {
+		return false
+	}
+	return true
+}
+
 // https://www.kernel.org/doc/Documentation/cgroups/cgroups.txt
 func FindCgroupMountpoint(subsystem string) (string, error) {
 	// We are not using mount.GetMounts() because it's super-inefficient,
@@ -33,6 +60,10 @@ func FindCgroupMountpoint(subsystem string) (string, error) {
 	for scanner.Scan() {
 		txt := scanner.Text()
 		fields := strings.Split(txt, " ")
+		if checkIfCgroupV2(subsystem, txt) {
+			fmt.Println("FindCgroupMountpoint cgroup v2 subsystem path", subsystem, fields[4])
+			return fields[4], NewV2Error(subsystem)
+		}
 		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
 			if opt == subsystem {
 				return fields[4], nil
@@ -57,23 +88,9 @@ func FindCgroupMountpointAndRoot(subsystem string) (string, string, error) {
 	for scanner.Scan() {
 		txt := scanner.Text()
 		fields := strings.Split(txt, " ")
-		cgroupType := fields[len(fields)-3]
-		if cgroupType == "cgroup2" {
-			if subsystem != "memory" && subsystem != "blkio" {
-				continue
-			}
-			if subsystem == "blkio" {
-				subsystem = "io"
-			}
-			path := fields[4]
-			if PathExists(path) {
-				cgroup_control := "+" + subsystem
-				if err := ioutil.WriteFile(filepath.Join(path, "cgroup.subtree_control"),
-					[]byte("subsystem"), 0700); err != nil {
-					return "", "", err
-				}
-			}
-			return fields[4], fields[3], nil
+		if checkIfCgroupV2(subsystem, txt) {
+			fmt.Println("FindCgroupMountpointAndRoot cgroup v2 subsystem path", subsystem, fields[4])
+			return fields[4], fields[3], NewV2Error(subsystem)
 		}
 		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
 			if opt == subsystem {
@@ -106,6 +123,7 @@ func FindCgroupMountpointDir() (string, error) {
 			return "", fmt.Errorf("Error found less than 3 fields post '-' in %q", text)
 		}
 		if postSeparatorFields[0] == "cgroup" {
+			fmt.Println("FindCgroupMountpointDir cgroup root path", fields[4])
 			return filepath.Dir(fields[4]), nil
 		}
 	}
