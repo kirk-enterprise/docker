@@ -299,7 +299,6 @@ func (raw *cgroupData) path(subsystem string) (string, error) {
 		return "", err
 	}
 
-	fmt.Println("cgroupData path subsystem:", subsystem, "root:", raw.root, "parent:", raw.parent, "name:", raw.name)
 	cgPath := filepath.Join(raw.parent, raw.name)
 	// If the cgroup name/path is absolute do not look relative to the cgroup of the init process.
 	if filepath.IsAbs(cgPath) || cgroups.IsV2Error(err) {
@@ -337,11 +336,9 @@ func (raw *cgroupData) addControllerForV2(subsystem, path string) error {
 
 func (raw *cgroupData) join(subsystem string) (string, error) {
 	path, err := raw.path(subsystem)
-	fmt.Println("cgroupData join path", path)
 	if err != nil && !cgroups.IsV2Error(err) {
 		return "", err
 	}
-	fmt.Println("cgroupData join MkdirAll", path)
 	if subErr := os.MkdirAll(path, 0755); subErr != nil {
 		return "", subErr
 	}
@@ -352,7 +349,6 @@ func (raw *cgroupData) join(subsystem string) (string, error) {
 		}
 	}
 
-	fmt.Println("cgroupData join writeFile path:", path, "pid:", raw.pid)
 	if subErr := writeFile(path, CgroupProcesses, strconv.Itoa(raw.pid)); subErr != nil {
 		return "", subErr
 	}

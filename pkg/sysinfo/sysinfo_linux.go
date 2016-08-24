@@ -60,24 +60,26 @@ func checkCgroupMem(quiet bool) cgroupMemInfo {
 	memorySwappiness := false
 	kernelMemory := false
 
-	if err != nil && !strings.Contains(err.Error(), "cgroup v2") {
-		if !quiet {
-			logrus.Warnf("Your kernel does not support cgroup memory limit: %v", err)
-		}
+	if err != nil {
+		if !strings.Contains(err.Error(), "cgroup v2") {
+			if !quiet {
+				logrus.Warnf("Your kernel does not support cgroup memory limit: %v", err)
+			}
 
-		return cgroupMemInfo{}
-	} else if strings.Contains(err.Error(), "cgroup v2") {
-		logrus.Warnf("Your kernel use cgroup v2 for memory limit")
-		mountPoint = mountPoint + "/docker/"
+			return cgroupMemInfo{}
+		} else {
+			logrus.Info("Your kernel use cgroup v2 for memory limit")
+			mountPoint = mountPoint + "/docker/"
 
-		swapLimit = cgroupEnabled(mountPoint, "memory.swap.max")
-		if !quiet && !swapLimit {
-			logrus.Warn("Your kernel does not support swap memory limit in cgroup v2.")
-		}
+			swapLimit = cgroupEnabled(mountPoint, "memory.swap.max")
+			if !quiet && !swapLimit {
+				logrus.Warn("Your kernel does not support swap memory limit in cgroup v2.")
+			}
 
-		memoryReservation = cgroupEnabled(mountPoint, "memory.low")
-		if !quiet && !memoryReservation {
-			logrus.Warn("Your kernel does not support memory reservation in cgroup v2.")
+			memoryReservation = cgroupEnabled(mountPoint, "memory.low")
+			if !quiet && !memoryReservation {
+				logrus.Warn("Your kernel does not support memory reservation in cgroup v2.")
+			}
 		}
 	} else {
 		swapLimit = cgroupEnabled(mountPoint, "memory.memsw.limit_in_bytes")
@@ -157,33 +159,35 @@ func checkCgroupBlkioInfo(quiet bool) cgroupBlkioInfo {
 	readIOpsDevice := false
 	writeIOpsDevice := false
 
-	if err != nil && !strings.Contains(err.Error(), "cgroup v2") {
-		if !quiet {
-			logrus.Warnf("Your kernel does not support cgroup blkio limit: %v", err)
-		}
+	if err != nil {
+		if !strings.Contains(err.Error(), "cgroup v2") {
+			if !quiet {
+				logrus.Warnf("Your kernel does not support cgroup blkio limit: %v", err)
+			}
 
-		return cgroupBlkioInfo{}
-	} else if strings.Contains(err.Error(), "cgroup v2") {
-		logrus.Warnf("Your kernel use cgroup v2 for blkio limit")
-		mountPoint = mountPoint + "/docker/"
+			return cgroupBlkioInfo{}
+		} else {
+			logrus.Info("Your kernel use cgroup v2 for blkio limit")
+			mountPoint = mountPoint + "/docker/"
 
-		weight = cgroupEnabled(mountPoint, "io.weight")
-		if !quiet && !weight {
-			logrus.Warn("Your kernel does not support cgroup blkio weight in cgroup v2")
-		}
-		if weight {
-			weightDevice = true
-		}
+			weight = cgroupEnabled(mountPoint, "io.weight")
+			if !quiet && !weight {
+				logrus.Warn("Your kernel does not support cgroup blkio weight in cgroup v2")
+			}
+			if weight {
+				weightDevice = true
+			}
 
-		max := cgroupEnabled(mountPoint, "io.max")
-		if !quiet && !max {
-			logrus.Warn("Your kernel does not support cgroup blkio max in cgroup v2")
-		}
-		if max {
-			readBpsDevice = true
-			writeBpsDevice = true
-			readIOpsDevice = true
-			writeIOpsDevice = true
+			max := cgroupEnabled(mountPoint, "io.max")
+			if !quiet && !max {
+				logrus.Warn("Your kernel does not support cgroup blkio max in cgroup v2")
+			}
+			if max {
+				readBpsDevice = true
+				writeBpsDevice = true
+				readIOpsDevice = true
+				writeIOpsDevice = true
+			}
 		}
 	} else {
 		weight = cgroupEnabled(mountPoint, "blkio.weight")

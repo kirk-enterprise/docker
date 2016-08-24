@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 )
 
 type BlkioGroup struct {
+	supportV2 bool
 }
 
 func (s *BlkioGroup) Name() string {
@@ -21,15 +23,14 @@ func (s *BlkioGroup) Name() string {
 }
 
 func (s *BlkioGroup) Apply(d *cgroupData) error {
-	fmt.Println("Enter BlkioGroup Apply")
 	dir, err := d.join("blkio")
-	if err != nil && !cgroups.IsNotFound(err) && !cgroups.IsV2Error(err) {
-		fmt.Println("BlkioGroup Apply join dir:", dir, "err:", err)
+	if cgroups.IsV2Error(err) {
+		s.supportV2 = true
+	} else if err != nil && !cgroups.IsNotFound(err) {
 		return err
 	}
 
 	if err := s.Set(dir, d.config); err != nil {
-		fmt.Println("BlkioGroup Apply Set dir:", dir, "err:", err)
 		return err
 	}
 
@@ -38,38 +39,82 @@ func (s *BlkioGroup) Apply(d *cgroupData) error {
 
 func (s *BlkioGroup) Set(path string, cgroup *configs.Cgroup) error {
 	if cgroup.Resources.BlkioWeight != 0 {
-		default_weight := "default " + strconv.FormatUint(uint64(cgroup.Resources.BlkioWeight), 10)
-		if err := writeFile(path, "io.weight", default_weight); err != nil {
+		name := "blkio.weight"
+		defaultWeight := strconv.FormatUint(uint64(cgroup.Resources.BlkioWeight), 10)
+		if s.supportV2 {
+			name = "io.weight"
+			defaultWeight = "default " + defaultWeight
+		}
+		if err := writeFile(path, name, defaultWeight); err != nil {
+			return err
+		}
+	}
+
+	if cgroup.Resources.BlkioLeafWeight != 0 && !s.supportV2 {
+		if err := writeFile(path, "blkio.leaf_weight", strconv.FormatUint(uint64(cgroup.Resources.BlkioLeafWeight), 10)); err != nil {
 			return err
 		}
 	}
 
 	for _, wd := range cgroup.Resources.BlkioWeightDevice {
-		if err := writeFile(path, "io.weight", wd.WeightString()); err != nil {
+		name := "blkio.weight_device"
+		if s.supportV2 {
+			name = "io.weight"
+		}
+		if err := writeFile(path, name, wd.WeightString()); err != nil {
 			return err
+		}
+		if !s.supportV2 {
+			if err := writeFile(path, "blkio.leaf_weight_device", wd.LeafWeightString()); err != nil {
+				return err
+			}
 		}
 	}
 
 	for _, td := range cgroup.Resources.BlkioThrottleReadBpsDevice {
-		if err := writeFile(path, "io.max", "rbps "+td.String()); err != nil {
+		name := "blkio.throttle.read_bps_device"
+		readBps := td.String()
+		if s.supportV2 {
+			name = "io.max"
+			readBps = "rbps " + readBps
+		}
+		if err := writeFile(path, name, readBps); err != nil {
 			return err
 		}
 	}
 
 	for _, td := range cgroup.Resources.BlkioThrottleWriteBpsDevice {
-		if err := writeFile(path, "io.max", "wbps "+td.String()); err != nil {
+		name := "blkio.throttle.write_bps_device"
+		writeBps := td.String()
+		if s.supportV2 {
+			name = "io.max"
+			writeBps = "wbps " + writeBps
+		}
+		if err := writeFile(path, name, writeBps); err != nil {
 			return err
 		}
 	}
 
 	for _, td := range cgroup.Resources.BlkioThrottleReadIOPSDevice {
-		if err := writeFile(path, "io.max", "riops "+td.String()); err != nil {
+		name := "blkio.throttle.read_iops_device"
+		readIops := td.String()
+		if s.supportV2 {
+			name = "io.max"
+			readIops = "riops " + readIops
+		}
+		if err := writeFile(path, name, readIops); err != nil {
 			return err
 		}
 	}
 
 	for _, td := range cgroup.Resources.BlkioThrottleWriteIOPSDevice {
-		if err := writeFile(path, "io.max", "wiops "+td.String()); err != nil {
+		name := "blkio.throttle.write_iops_device"
+		writeIops := td.String()
+		if s.supportV2 {
+			name = "io.max"
+			writeIops = "wiops " + writeIops
+		}
+		if err := writeFile(path, name, writeIops); err != nil {
 			return err
 		}
 	}
@@ -173,10 +218,76 @@ func getBlkioStat(path string) ([]cgroups.BlkioStatEntry, error) {
 }
 
 func (s *BlkioGroup) GetStats(path string, stats *cgroups.Stats) error {
+	if s.supportV2 {
+		return nil
+	}
+	// Try to read CFQ stats available on all CFQ enabled kernels first
+	if blkioStats, err := getBlkioStat(filepath.Join(path, "blkio.io_serviced_recursive")); err == nil && blkioStats != nil {
+		return getCFQStats(path, stats)
+	}
 	return getStats(path, stats) // Use generic stats as fallback
 }
 
+func getCFQStats(path string, stats *cgroups.Stats) error {
+	var blkioStats []cgroups.BlkioStatEntry
+	var err error
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.sectors_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.SectorsRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_service_bytes_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoServiceBytesRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_serviced_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoServicedRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_queued_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoQueuedRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_service_time_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoServiceTimeRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_wait_time_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoWaitTimeRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_merged_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoMergedRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.time_recursive")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoTimeRecursive = blkioStats
+
+	return nil
+}
+
 func getStats(path string, stats *cgroups.Stats) error {
+	var blkioStats []cgroups.BlkioStatEntry
+	var err error
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.throttle.io_service_bytes")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoServiceBytesRecursive = blkioStats
+
+	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.throttle.io_serviced")); err != nil {
+		return err
+	}
+	stats.BlkioStats.IoServicedRecursive = blkioStats
 
 	return nil
 }

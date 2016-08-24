@@ -61,7 +61,6 @@ func FindCgroupMountpoint(subsystem string) (string, error) {
 		txt := scanner.Text()
 		fields := strings.Split(txt, " ")
 		if checkIfCgroupV2(subsystem, txt) {
-			fmt.Println("FindCgroupMountpoint cgroup v2 subsystem path", subsystem, fields[4])
 			return fields[4], NewV2Error(subsystem)
 		}
 		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
@@ -89,7 +88,6 @@ func FindCgroupMountpointAndRoot(subsystem string) (string, string, error) {
 		txt := scanner.Text()
 		fields := strings.Split(txt, " ")
 		if checkIfCgroupV2(subsystem, txt) {
-			fmt.Println("FindCgroupMountpointAndRoot cgroup v2 subsystem path", subsystem, fields[4])
 			return fields[4], fields[3], NewV2Error(subsystem)
 		}
 		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
@@ -123,7 +121,6 @@ func FindCgroupMountpointDir() (string, error) {
 			return "", fmt.Errorf("Error found less than 3 fields post '-' in %q", text)
 		}
 		if postSeparatorFields[0] == "cgroup" {
-			fmt.Println("FindCgroupMountpointDir cgroup root path", fields[4])
 			return filepath.Dir(fields[4]), nil
 		}
 	}
