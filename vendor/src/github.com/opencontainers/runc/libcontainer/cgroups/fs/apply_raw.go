@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
@@ -128,7 +129,7 @@ func (m *Manager) Apply(pid int) (err error) {
 		// create and join phase so that the cgroup hierarchy for a container can be
 		// created then join consists of writing the process pids to cgroup.procs
 		p, err := d.path(sys.Name())
-		if err != nil {
+		if err != nil && !cgroups.IsV2Error(err) {
 			if cgroups.IsNotFound(err) {
 				continue
 			}
@@ -294,37 +295,64 @@ func (raw *cgroupData) parentPath(subsystem, mountpoint, root string) (string, e
 func (raw *cgroupData) path(subsystem string) (string, error) {
 	mnt, root, err := cgroups.FindCgroupMountpointAndRoot(subsystem)
 	// If we didn't mount the subsystem, there is no point we make the path.
-	if err != nil {
+	if err != nil && !cgroups.IsV2Error(err) {
 		return "", err
 	}
 
 	cgPath := filepath.Join(raw.parent, raw.name)
 	// If the cgroup name/path is absolute do not look relative to the cgroup of the init process.
-	if filepath.IsAbs(cgPath) {
+	if filepath.IsAbs(cgPath) || cgroups.IsV2Error(err) {
 		// Sometimes subsystems can be mounted togethger as 'cpu,cpuacct'.
-		return filepath.Join(raw.root, filepath.Base(mnt), cgPath), nil
+		return filepath.Join(raw.root, filepath.Base(mnt), cgPath), err
 	}
 
-	parentPath, err := raw.parentPath(subsystem, mnt, root)
-	if err != nil {
-		return "", err
+	parentPath, subErr := raw.parentPath(subsystem, mnt, root)
+	if subErr != nil {
+		return "", subErr
 	}
 
-	return filepath.Join(parentPath, cgPath), nil
+	return filepath.Join(parentPath, cgPath), err
+}
+
+func (raw *cgroupData) addControllerForV2(subsystem, path string) error {
+	if subsystem == "blkio" {
+		subsystem = "io"
+	}
+	index := strings.Index(path, raw.parent)
+	subPath := path[0:index]
+	subDirs := strings.Split(path[index:], "/")
+	for _, subDir := range subDirs {
+		if subDir == raw.name {
+			break
+		}
+		subPath = subPath + subDir + "/"
+		if err := ioutil.WriteFile(filepath.Join(subPath, "cgroup.subtree_control"),
+			[]byte("+"+subsystem), 0700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (raw *cgroupData) join(subsystem string) (string, error) {
 	path, err := raw.path(subsystem)
-	if err != nil {
+	if err != nil && !cgroups.IsV2Error(err) {
 		return "", err
 	}
-	if err := os.MkdirAll(path, 0755); err != nil {
-		return "", err
+	if subErr := os.MkdirAll(path, 0755); subErr != nil {
+		return "", subErr
 	}
-	if err := writeFile(path, CgroupProcesses, strconv.Itoa(raw.pid)); err != nil {
-		return "", err
+
+	if cgroups.IsV2Error(err) {
+		if subErr := raw.addControllerForV2(subsystem, path); subErr != nil {
+			return "", subErr
+		}
 	}
-	return path, nil
+
+	if subErr := writeFile(path, CgroupProcesses, strconv.Itoa(raw.pid)); subErr != nil {
+		return "", subErr
+	}
+	return path, err
 }
 
 func writeFile(dir, file, data string) error {
