@@ -15,7 +15,7 @@ import (
 )
 
 type MemoryGroup struct {
-	supportV2 bool
+	SupportV2 bool
 }
 
 func (s *MemoryGroup) Name() string {
@@ -25,7 +25,7 @@ func (s *MemoryGroup) Name() string {
 func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
 	path, err := d.path("memory")
 	if cgroups.IsV2Error(err) {
-		s.supportV2 = true
+		s.SupportV2 = true
 	} else if err != nil && !cgroups.IsNotFound(err) {
 		return
 	}
@@ -67,7 +67,7 @@ func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
 func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 	if cgroup.Resources.Memory != 0 {
 		name := "memory.limit_in_bytes"
-		if s.supportV2 {
+		if s.SupportV2 {
 			name = "memory.max"
 		}
 		if err := writeFile(path, name, strconv.FormatInt(cgroup.Resources.Memory, 10)); err != nil {
@@ -77,7 +77,7 @@ func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 
 	if cgroup.Resources.MemoryReservation != 0 {
 		name := "soft_limit_in_bytes"
-		if s.supportV2 {
+		if s.SupportV2 {
 			name = "memory.low"
 		}
 		if err := writeFile(path, name, strconv.FormatInt(cgroup.Resources.MemoryReservation, 10)); err != nil {
@@ -87,7 +87,7 @@ func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 
 	if cgroup.Resources.MemorySwap > 0 {
 		name := "memory.memsw.limit_in_bytes"
-		if s.supportV2 {
+		if s.SupportV2 {
 			name = "memory.swap.max"
 		}
 		if err := writeFile(path, name, strconv.FormatInt(cgroup.Resources.MemorySwap, 10)); err != nil {
@@ -95,7 +95,7 @@ func (s *MemoryGroup) Set(path string, cgroup *configs.Cgroup) error {
 		}
 	}
 
-	if s.supportV2 {
+	if s.SupportV2 {
 		return nil
 	}
 
@@ -143,11 +143,13 @@ func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {
 	}
 	defer statsFile.Close()
 
-	fileCacheName := "cache"
+	cacheName := "cache"
 	swapName := "memsw"
-	if s.supportV2 {
-		fileCacheName = "file"
+	rssName := "rss"
+	if s.SupportV2 {
+		cacheName = "file"
 		swapName = "swap"
+		rssName = "anon"
 	}
 
 	sc := bufio.NewScanner(statsFile)
@@ -158,20 +160,31 @@ func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {
 		}
 		stats.MemoryStats.Stats[t] = v
 	}
-	stats.MemoryStats.Cache = stats.MemoryStats.Stats[fileCacheName]
+
+	cacheVal, ok := stats.MemoryStats.Stats[cacheName]
+	if ok {
+		stats.MemoryStats.Cache = cacheVal
+		stats.MemoryStats.Stats["cache"] = cacheVal
+	}
+
+	rssVal, ok := stats.MemoryStats.Stats[rssName]
+	if ok {
+		stats.MemoryStats.Stats["rss"] = rssVal
+	}
 
 	memoryUsage, err := s.getMemoryData(path, "")
 	if err != nil {
 		return err
 	}
 	stats.MemoryStats.Usage = memoryUsage
+
 	swapUsage, err := s.getMemoryData(path, swapName)
 	if err != nil {
 		return err
 	}
 	stats.MemoryStats.SwapUsage = swapUsage
 
-	if s.supportV2 {
+	if s.SupportV2 {
 		return nil
 	}
 
@@ -202,7 +215,7 @@ func (s *MemoryGroup) getMemoryData(path, name string) (cgroups.MemoryData, erro
 	}
 
 	usageName := "usage_in_bytes"
-	if s.supportV2 {
+	if s.SupportV2 {
 		usageName = "current"
 	}
 
@@ -216,7 +229,7 @@ func (s *MemoryGroup) getMemoryData(path, name string) (cgroups.MemoryData, erro
 	}
 	memoryData.Usage = value
 
-	if s.supportV2 {
+	if s.SupportV2 {
 		return memoryData, nil
 	}
 
