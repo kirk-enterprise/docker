@@ -1,17 +1,12 @@
----
-title: "volume ls"
-description: "The volume ls command description and usage"
-keywords: "volume, list"
----
-
-<!-- This file is maintained within the docker/docker Github
-     repository at https://github.com/docker/docker/. Make all
-     pull requests against that repo. If you see this file in
-     another repository, consider it read-only there, as it will
-     periodically be overwritten by the definitive file. Pull
-     requests which include edits to this file in other repositories
-     will be rejected.
--->
+<!--[metadata]>
++++
+title = "volume ls"
+description = "The volume ls command description and usage"
+keywords = ["volume, list"]
+[menu.main]
+parent = "smn_cli"
++++
+<![end-metadata]-->
 
 # volume ls
 
@@ -34,14 +29,14 @@ Options:
   -q, --quiet          Only display volume names
 ```
 
-List all the volumes Docker knows about. You can filter using the `-f` or `--filter` flag. Refer to the [filtering](#filtering) section for more information about available filter options.
+Lists all the volumes Docker knows about. You can filter using the `-f` or `--filter` flag. Refer to the [filtering](#filtering) section for more information about available filter options.
 
 Example output:
 
 ```bash
-$ docker volume create rosemary
+$ docker volume create --name rosemary
 rosemary
-$docker volume create tyler
+$docker volume create --name tyler
 tyler
 $ docker volume ls
 DRIVER              VOLUME NAME
@@ -96,9 +91,9 @@ a `label` and a value.
 First, let's create some volumes to illustrate this;
 
 ```bash
-$ docker volume create the-doctor --label is-timelord=yes
+$ docker volume create --name the-doctor --label is-timelord=yes
 the-doctor
-$ docker volume create daleks --label is-timelord=no
+$ docker volume create --name daleks --label is-timelord=no
 daleks
 ```
 
@@ -108,7 +103,7 @@ regardless of its value.
 ```bash
 $ docker volume ls --filter label=is-timelord
 
-DRIVER              VOLUME NAME
+DRIVER              NAME
 local               daleks
 local               the-doctor
 ```
@@ -121,7 +116,7 @@ Filtering on both `key` *and* `value` of the label, produces the expected result
 ```bash
 $ docker volume ls --filter label=is-timelord=yes
 
-DRIVER              VOLUME NAME
+DRIVER              NAME
 local               the-doctor
 ```
 
@@ -131,7 +126,7 @@ should be met;
 ```bash
 $ docker volume ls --filter label=is-timelord=yes --filter label=is-timelord=no
 
-DRIVER              VOLUME NAME
+DRIVER              NAME
 ```
 
 ### name
@@ -179,5 +174,4 @@ vol3: local
 * [volume create](volume_create.md)
 * [volume inspect](volume_inspect.md)
 * [volume rm](volume_rm.md)
-* [volume prune](volume_prune.md)
-* [Understand Data Volumes](https://docs.docker.com/engine/tutorials/dockervolumes/)
+* [Understand Data Volumes](../../tutorials/dockervolumes.md)

@@ -1,28 +1,23 @@
----
-title: "plugin enable"
-description: "the plugin enable command description and usage"
-keywords: "plugin, enable"
----
+<!--[metadata]>
++++
+title = "plugin enable"
+description = "the plugin enable command description and usage"
+keywords = ["plugin, enable"]
+advisory = "experimental"
+[menu.main]
+parent = "smn_cli"
++++
+<![end-metadata]-->
 
-<!-- This file is maintained within the docker/docker Github
-     repository at https://github.com/docker/docker/. Make all
-     pull requests against that repo. If you see this file in
-     another repository, consider it read-only there, as it will
-     periodically be overwritten by the definitive file. Pull
-     requests which include edits to this file in other repositories
-     will be rejected.
--->
-
-# plugin enable
+# plugin enable (experimental)
 
 ```markdown
-Usage:  docker plugin enable [OPTIONS] PLUGIN
+Usage:  docker plugin enable PLUGIN
 
 Enable a plugin
 
 Options:
-      --help          Print usage
-      --timeout int   HTTP client timeout (in seconds)
+      --help   Print usage
 ```
 
 Enables a plugin. The plugin must be installed before it can be enabled,
@@ -30,13 +25,13 @@ see [`docker plugin install`](plugin_install.md).
 
 
 The following example shows that the `no-remove` plugin is installed,
-but disabled:
+but disabled ("inactive"):
 
 ```bash
 $ docker plugin ls
 
-ID                  NAME                  TAG                 DESCRIPTION                ENABLED
-69553ca1d123        tiborvass/no-remove   latest              A test plugin for Docker   false
+NAME                  TAG                 DESCRIPTION                ACTIVE
+tiborvass/no-remove   latest              A test plugin for Docker   false
 ```
 
 To enable the plugin, use the following command:
@@ -45,20 +40,21 @@ To enable the plugin, use the following command:
 $ docker plugin enable tiborvass/no-remove
 
 tiborvass/no-remove
+```
 
+After the plugin is enabled, it appears as "active" in the list of plugins:
+
+```bash
 $ docker plugin ls
 
-ID                  NAME                  TAG                 DESCRIPTION                ENABLED
-69553ca1d123        tiborvass/no-remove   latest              A test plugin for Docker   true
+NAME                  TAG                 DESCRIPTION                ACTIVE
+tiborvass/no-remove   latest              A test plugin for Docker   true
 ```
 
 ## Related information
 
-* [plugin create](plugin_create.md)
+* [plugin ls](plugin_ls.md)
 * [plugin disable](plugin_disable.md)
 * [plugin inspect](plugin_inspect.md)
 * [plugin install](plugin_install.md)
-* [plugin ls](plugin_ls.md)
-* [plugin push](plugin_push.md)
 * [plugin rm](plugin_rm.md)
-* [plugin set](plugin_set.md)

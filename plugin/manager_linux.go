@@ -1,9 +1,8 @@
-// +build linux
+// +build linux,experimental
 
 package plugin
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,206 +10,180 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/distribution/digest"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/daemon/initlayer"
 	"github.com/docker/docker/libcontainerd"
-	"github.com/docker/docker/pkg/mount"
+	"github.com/docker/docker/oci"
 	"github.com/docker/docker/pkg/plugins"
-	"github.com/docker/docker/pkg/stringid"
-	"github.com/docker/docker/plugin/v2"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/pkg/errors"
+	"github.com/docker/docker/pkg/system"
+	"github.com/docker/docker/restartmanager"
+	"github.com/docker/engine-api/types"
+	"github.com/docker/engine-api/types/container"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
-func (pm *Manager) enable(p *v2.Plugin, c *controller, force bool) error {
-	p.Rootfs = filepath.Join(pm.config.Root, p.PluginObj.ID, "rootfs")
-	if p.IsEnabled() && !force {
+func (pm *Manager) enable(p *plugin, force bool) error {
+	if p.PluginObj.Active && !force {
 		return fmt.Errorf("plugin %s is already enabled", p.Name())
 	}
-	spec, err := p.InitSpec(pm.config.ExecRoot)
+	spec, err := pm.initSpec(p)
 	if err != nil {
 		return err
 	}
 
-	c.restart = true
-	c.exitChan = make(chan bool)
-
-	pm.mu.Lock()
-	pm.cMap[p] = c
-	pm.mu.Unlock()
-
-	if p.PropagatedMount != "" {
-		if err := mount.MakeRShared(p.PropagatedMount); err != nil {
-			return err
-		}
-	}
-
-	if err := initlayer.Setup(filepath.Join(pm.config.Root, p.PluginObj.ID, rootFSFileName), 0, 0); err != nil {
-		return err
-	}
-
-	if err := pm.containerdClient.Create(p.GetID(), "", "", specs.Spec(*spec), attachToLog(p.GetID())); err != nil {
-		if p.PropagatedMount != "" {
-			if err := mount.Unmount(p.PropagatedMount); err != nil {
-				logrus.Warnf("Could not unmount %s: %v", p.PropagatedMount, err)
-			}
+	p.restartManager = restartmanager.New(container.RestartPolicy{Name: "always"}, 0)
+	if err := pm.containerdClient.Create(p.PluginObj.ID, libcontainerd.Spec(*spec), libcontainerd.WithRestartManager(p.restartManager)); err != nil { // POC-only
+		if err := p.restartManager.Cancel(); err != nil {
+			logrus.Errorf("enable: restartManager.Cancel failed due to %v", err)
 		}
 		return err
 	}
 
-	return pm.pluginPostStart(p, c)
-}
-
-func (pm *Manager) pluginPostStart(p *v2.Plugin, c *controller) error {
-	client, err := plugins.NewClientWithTimeout("unix://"+filepath.Join(pm.config.ExecRoot, p.GetID(), p.GetSocket()), nil, c.timeoutInSecs)
+	socket := p.PluginObj.Manifest.Interface.Socket
+	p.client, err = plugins.NewClient("unix://"+filepath.Join(p.runtimeSourcePath, socket), nil)
 	if err != nil {
-		c.restart = false
-		shutdownPlugin(p, c, pm.containerdClient)
-		return err
-	}
-
-	p.SetPClient(client)
-	pm.config.Store.SetState(p, true)
-	pm.config.Store.CallHandler(p)
-
-	return pm.save(p)
-}
-
-func (pm *Manager) restore(p *v2.Plugin) error {
-	if err := pm.containerdClient.Restore(p.GetID(), attachToLog(p.GetID())); err != nil {
-		return err
-	}
-
-	if pm.config.LiveRestoreEnabled {
-		c := &controller{}
-		if pids, _ := pm.containerdClient.GetPidsForContainer(p.GetID()); len(pids) == 0 {
-			// plugin is not running, so follow normal startup procedure
-			return pm.enable(p, c, true)
+		if err := p.restartManager.Cancel(); err != nil {
+			logrus.Errorf("enable: restartManager.Cancel failed due to %v", err)
 		}
+		return err
+	}
 
-		c.exitChan = make(chan bool)
-		c.restart = true
-		pm.mu.Lock()
-		pm.cMap[p] = c
-		pm.mu.Unlock()
-		return pm.pluginPostStart(p, c)
+	pm.Lock() // fixme: lock single record
+	p.PluginObj.Active = true
+	pm.save()
+	pm.Unlock()
+
+	for _, typ := range p.PluginObj.Manifest.Interface.Types {
+		if handler := pm.handlers[typ.String()]; handler != nil {
+			handler(p.Name(), p.Client())
+		}
 	}
 
 	return nil
 }
 
-func shutdownPlugin(p *v2.Plugin, c *controller, containerdClient libcontainerd.Client) {
-	pluginID := p.GetID()
-
-	err := containerdClient.Signal(pluginID, int(syscall.SIGTERM))
-	if err != nil {
-		logrus.Errorf("Sending SIGTERM to plugin failed with error: %v", err)
-	} else {
-		select {
-		case <-c.exitChan:
-			logrus.Debug("Clean shutdown of plugin")
-		case <-time.After(time.Second * 10):
-			logrus.Debug("Force shutdown plugin")
-			if err := containerdClient.Signal(pluginID, int(syscall.SIGKILL)); err != nil {
-				logrus.Errorf("Sending SIGKILL to plugin failed with error: %v", err)
-			}
-		}
-	}
+func (pm *Manager) restore(p *plugin) error {
+	p.restartManager = restartmanager.New(container.RestartPolicy{Name: "always"}, 0)
+	return pm.containerdClient.Restore(p.PluginObj.ID, libcontainerd.WithRestartManager(p.restartManager))
 }
 
-func (pm *Manager) disable(p *v2.Plugin, c *controller) error {
-	if !p.IsEnabled() {
-		return fmt.Errorf("plugin %s is already disabled", p.Name())
+func (pm *Manager) initSpec(p *plugin) (*specs.Spec, error) {
+	s := oci.DefaultSpec()
+
+	rootfs := filepath.Join(pm.libRoot, p.PluginObj.ID, "rootfs")
+	s.Root = specs.Root{
+		Path:     rootfs,
+		Readonly: false, // TODO: all plugins should be readonly? settable in manifest?
 	}
 
-	c.restart = false
-	shutdownPlugin(p, c, pm.containerdClient)
-	pm.config.Store.SetState(p, false)
-	return pm.save(p)
+	mounts := append(p.PluginObj.Config.Mounts, types.PluginMount{
+		Source:      &p.runtimeSourcePath,
+		Destination: defaultPluginRuntimeDestination,
+		Type:        "bind",
+		Options:     []string{"rbind", "rshared"},
+	})
+	for _, mount := range mounts {
+		m := specs.Mount{
+			Destination: mount.Destination,
+			Type:        mount.Type,
+			Options:     mount.Options,
+		}
+		// TODO: if nil, then it's required and user didn't set it
+		if mount.Source != nil {
+			m.Source = *mount.Source
+		}
+
+		if m.Source != "" && m.Type == "bind" {
+			/* Debugging issue #25511: Volumes and other content created under the
+			bind mount should be recursively propagated. rshared, not shared.
+			This could be the reason for EBUSY during removal. Override options
+			with rbind, rshared and see if CI errors are fixed. */
+			m.Options = []string{"rbind", "rshared"}
+			fi, err := os.Lstat(filepath.Join(rootfs, string(os.PathSeparator), m.Destination)) // TODO: followsymlinks
+			if err != nil {
+				return nil, err
+			}
+			if fi.IsDir() {
+				if err := os.MkdirAll(m.Source, 0700); err != nil {
+					return nil, err
+				}
+			}
+		}
+		s.Mounts = append(s.Mounts, m)
+	}
+
+	envs := make([]string, 1, len(p.PluginObj.Config.Env)+1)
+	envs[0] = "PATH=" + system.DefaultPathEnv
+	envs = append(envs, p.PluginObj.Config.Env...)
+
+	args := append(p.PluginObj.Manifest.Entrypoint, p.PluginObj.Config.Args...)
+	cwd := p.PluginObj.Manifest.Workdir
+	if len(cwd) == 0 {
+		cwd = "/"
+	}
+	s.Process = specs.Process{
+		Terminal: false,
+		Args:     args,
+		Cwd:      cwd,
+		Env:      envs,
+	}
+
+	return &s, nil
+}
+
+func (pm *Manager) disable(p *plugin) error {
+	if !p.PluginObj.Active {
+		return fmt.Errorf("plugin %s is already disabled", p.Name())
+	}
+	if err := p.restartManager.Cancel(); err != nil {
+		logrus.Error(err)
+	}
+	if err := pm.containerdClient.Signal(p.PluginObj.ID, int(syscall.SIGKILL)); err != nil {
+		logrus.Error(err)
+	}
+	os.RemoveAll(p.runtimeSourcePath)
+	pm.Lock() // fixme: lock single record
+	defer pm.Unlock()
+	p.PluginObj.Active = false
+	pm.save()
+	return nil
 }
 
 // Shutdown stops all plugins and called during daemon shutdown.
 func (pm *Manager) Shutdown() {
-	plugins := pm.config.Store.GetAll()
-	for _, p := range plugins {
-		pm.mu.RLock()
-		c := pm.cMap[p]
-		pm.mu.RUnlock()
+	pm.Lock()
+	pm.shutdown = true
+	pm.Unlock()
 
-		if pm.config.LiveRestoreEnabled && p.IsEnabled() {
+	pm.RLock()
+	defer pm.RUnlock()
+	for _, p := range pm.plugins {
+		if pm.liveRestore && p.PluginObj.Active {
 			logrus.Debug("Plugin active when liveRestore is set, skipping shutdown")
 			continue
 		}
-		if pm.containerdClient != nil && p.IsEnabled() {
-			c.restart = false
-			shutdownPlugin(p, c, pm.containerdClient)
+		if p.restartManager != nil {
+			if err := p.restartManager.Cancel(); err != nil {
+				logrus.Error(err)
+			}
+		}
+		if pm.containerdClient != nil && p.PluginObj.Active {
+			p.exitChan = make(chan bool)
+			err := pm.containerdClient.Signal(p.PluginObj.ID, int(syscall.SIGTERM))
+			if err != nil {
+				logrus.Errorf("Sending SIGTERM to plugin failed with error: %v", err)
+			} else {
+				select {
+				case <-p.exitChan:
+					logrus.Debug("Clean shutdown of plugin")
+				case <-time.After(time.Second * 10):
+					logrus.Debug("Force shutdown plugin")
+					if err := pm.containerdClient.Signal(p.PluginObj.ID, int(syscall.SIGKILL)); err != nil {
+						logrus.Errorf("Sending SIGKILL to plugin failed with error: %v", err)
+					}
+				}
+			}
+		}
+		if err := os.RemoveAll(p.runtimeSourcePath); err != nil {
+			logrus.Errorf("Remove plugin runtime failed with error: %v", err)
 		}
 	}
-}
-
-// createPlugin creates a new plugin. take lock before calling.
-func (pm *Manager) createPlugin(name string, configDigest digest.Digest, blobsums []digest.Digest, rootFSDir string, privileges *types.PluginPrivileges) (p *v2.Plugin, err error) {
-	if err := pm.config.Store.validateName(name); err != nil { // todo: this check is wrong. remove store
-		return nil, err
-	}
-
-	configRC, err := pm.blobStore.Get(configDigest)
-	if err != nil {
-		return nil, err
-	}
-	defer configRC.Close()
-
-	var config types.PluginConfig
-	dec := json.NewDecoder(configRC)
-	if err := dec.Decode(&config); err != nil {
-		return nil, errors.Wrapf(err, "failed to parse config")
-	}
-	if dec.More() {
-		return nil, errors.New("invalid config json")
-	}
-
-	requiredPrivileges, err := computePrivileges(config)
-	if err != nil {
-		return nil, err
-	}
-	if privileges != nil {
-		if err := validatePrivileges(requiredPrivileges, *privileges); err != nil {
-			return nil, err
-		}
-	}
-
-	p = &v2.Plugin{
-		PluginObj: types.Plugin{
-			Name:   name,
-			ID:     stringid.GenerateRandomID(),
-			Config: config,
-		},
-		Config:   configDigest,
-		Blobsums: blobsums,
-	}
-	p.InitEmptySettings()
-
-	pdir := filepath.Join(pm.config.Root, p.PluginObj.ID)
-	if err := os.MkdirAll(pdir, 0700); err != nil {
-		return nil, errors.Wrapf(err, "failed to mkdir %v", pdir)
-	}
-
-	defer func() {
-		if err != nil {
-			os.RemoveAll(pdir)
-		}
-	}()
-
-	if err := os.Rename(rootFSDir, filepath.Join(pdir, rootFSFileName)); err != nil {
-		return nil, errors.Wrap(err, "failed to rename rootfs")
-	}
-
-	if err := pm.save(p); err != nil {
-		return nil, err
-	}
-
-	pm.config.Store.Add(p) // todo: remove
-
-	return p, nil
 }

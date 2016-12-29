@@ -376,12 +376,12 @@ func (d *Driver) subvolumesDirID(id string) string {
 
 // CreateReadWrite creates a layer that is writable for use as a container
 // file system.
-func (d *Driver) CreateReadWrite(id, parent string, opts *graphdriver.CreateOpts) error {
-	return d.Create(id, parent, opts)
+func (d *Driver) CreateReadWrite(id, parent, mountLabel string, storageOpt map[string]string) error {
+	return d.Create(id, parent, mountLabel, storageOpt)
 }
 
 // Create the filesystem with given id.
-func (d *Driver) Create(id, parent string, opts *graphdriver.CreateOpts) error {
+func (d *Driver) Create(id, parent, mountLabel string, storageOpt map[string]string) error {
 	subvolumes := path.Join(d.home, "subvolumes")
 	rootUID, rootGID, err := idtools.GetRootUIDGID(d.uidMaps, d.gidMaps)
 	if err != nil {
@@ -408,11 +408,6 @@ func (d *Driver) Create(id, parent string, opts *graphdriver.CreateOpts) error {
 		}
 	}
 
-	var storageOpt map[string]string
-	if opts != nil {
-		storageOpt = opts.StorageOpt
-	}
-
 	if _, ok := storageOpt["size"]; ok {
 		driver := &Driver{}
 		if err := d.parseStorageOpt(storageOpt, driver); err != nil {
@@ -429,11 +424,6 @@ func (d *Driver) Create(id, parent string, opts *graphdriver.CreateOpts) error {
 		if err := os.Chown(path.Join(subvolumes, id), rootUID, rootGID); err != nil {
 			return err
 		}
-	}
-
-	mountLabel := ""
-	if opts != nil {
-		mountLabel = opts.MountLabel
 	}
 
 	return label.Relabel(path.Join(subvolumes, id), mountLabel, false)

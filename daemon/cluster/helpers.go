@@ -3,7 +3,6 @@ package cluster
 import (
 	"fmt"
 
-	"github.com/docker/docker/api/errors"
 	swarmapi "github.com/docker/swarmkit/api"
 	"golang.org/x/net/context"
 )
@@ -15,7 +14,7 @@ func getSwarm(ctx context.Context, c swarmapi.ControlClient) (*swarmapi.Cluster,
 	}
 
 	if len(rl.Clusters) == 0 {
-		return nil, errors.NewRequestNotFoundError(errNoSwarm)
+		return nil, fmt.Errorf("swarm not found")
 	}
 
 	// TODO: assume one cluster only
@@ -39,8 +38,7 @@ func getNode(ctx context.Context, c swarmapi.ControlClient, input string) (*swar
 		}
 
 		if len(rl.Nodes) == 0 {
-			err := fmt.Errorf("node %s not found", input)
-			return nil, errors.NewRequestNotFoundError(err)
+			return nil, fmt.Errorf("node %s not found", input)
 		}
 
 		if l := len(rl.Nodes); l > 1 {
@@ -68,8 +66,7 @@ func getService(ctx context.Context, c swarmapi.ControlClient, input string) (*s
 		}
 
 		if len(rl.Services) == 0 {
-			err := fmt.Errorf("service %s not found", input)
-			return nil, errors.NewRequestNotFoundError(err)
+			return nil, fmt.Errorf("service %s not found", input)
 		}
 
 		if l := len(rl.Services); l > 1 {
@@ -98,8 +95,7 @@ func getTask(ctx context.Context, c swarmapi.ControlClient, input string) (*swar
 		}
 
 		if len(rl.Tasks) == 0 {
-			err := fmt.Errorf("task %s not found", input)
-			return nil, errors.NewRequestNotFoundError(err)
+			return nil, fmt.Errorf("task %s not found", input)
 		}
 
 		if l := len(rl.Tasks); l > 1 {
@@ -109,31 +105,4 @@ func getTask(ctx context.Context, c swarmapi.ControlClient, input string) (*swar
 		return rl.Tasks[0], nil
 	}
 	return rg.Task, nil
-}
-
-func getNetwork(ctx context.Context, c swarmapi.ControlClient, input string) (*swarmapi.Network, error) {
-	// GetNetwork to match via full ID.
-	rg, err := c.GetNetwork(ctx, &swarmapi.GetNetworkRequest{NetworkID: input})
-	if err != nil {
-		// If any error (including NotFound), ListNetworks to match via ID prefix and full name.
-		rl, err := c.ListNetworks(ctx, &swarmapi.ListNetworksRequest{Filters: &swarmapi.ListNetworksRequest_Filters{Names: []string{input}}})
-		if err != nil || len(rl.Networks) == 0 {
-			rl, err = c.ListNetworks(ctx, &swarmapi.ListNetworksRequest{Filters: &swarmapi.ListNetworksRequest_Filters{IDPrefixes: []string{input}}})
-		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		if len(rl.Networks) == 0 {
-			return nil, fmt.Errorf("network %s not found", input)
-		}
-
-		if l := len(rl.Networks); l > 1 {
-			return nil, fmt.Errorf("network %s is ambiguous (%d matches found)", input, l)
-		}
-
-		return rl.Networks[0], nil
-	}
-	return rg.Network, nil
 }

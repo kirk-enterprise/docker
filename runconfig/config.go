@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/docker/docker/api/types/container"
-	networktypes "github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/volume"
+	"github.com/docker/engine-api/types/container"
+	networktypes "github.com/docker/engine-api/types/network"
 )
 
 // ContainerDecoder implements httputils.ContainerDecoder
@@ -48,7 +47,7 @@ func DecodeContainerConfig(src io.Reader) (*container.Config, *container.HostCon
 		}
 
 		// Now validate all the volumes and binds
-		if err := validateMountSettings(w.Config, hc); err != nil {
+		if err := validateVolumesAndBindSettings(w.Config, hc); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -68,28 +67,22 @@ func DecodeContainerConfig(src io.Reader) (*container.Config, *container.HostCon
 	if err := ValidateQoS(hc); err != nil {
 		return nil, nil, nil, err
 	}
-
-	// Validate Resources
-	if err := ValidateResources(hc, sysinfo.New(true)); err != nil {
-		return nil, nil, nil, err
-	}
 	return w.Config, hc, w.NetworkingConfig, nil
 }
 
-// validateMountSettings validates each of the volumes and bind settings
+// validateVolumesAndBindSettings validates each of the volumes and bind settings
 // passed by the caller to ensure they are valid.
-func validateMountSettings(c *container.Config, hc *container.HostConfig) error {
-	// it is ok to have len(hc.Mounts) > 0 && (len(hc.Binds) > 0 || len (c.Volumes) > 0 || len (hc.Tmpfs) > 0 )
+func validateVolumesAndBindSettings(c *container.Config, hc *container.HostConfig) error {
 
 	// Ensure all volumes and binds are valid.
 	for spec := range c.Volumes {
-		if _, err := volume.ParseMountRaw(spec, hc.VolumeDriver); err != nil {
-			return fmt.Errorf("invalid volume spec %q: %v", spec, err)
+		if _, err := volume.ParseMountSpec(spec, hc.VolumeDriver); err != nil {
+			return fmt.Errorf("Invalid volume spec %q: %v", spec, err)
 		}
 	}
 	for _, spec := range hc.Binds {
-		if _, err := volume.ParseMountRaw(spec, hc.VolumeDriver); err != nil {
-			return fmt.Errorf("invalid bind mount spec %q: %v", spec, err)
+		if _, err := volume.ParseMountSpec(spec, hc.VolumeDriver); err != nil {
+			return fmt.Errorf("Invalid bind mount spec %q: %v", spec, err)
 		}
 	}
 

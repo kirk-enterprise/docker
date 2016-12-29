@@ -161,19 +161,17 @@ func regexpMatch(pattern, path string) (bool, error) {
 				// is some flavor of "**"
 				scan.Next()
 
-				// Treat **/ as ** so eat the "/"
-				if string(scan.Peek()) == sl {
-					scan.Next()
-				}
-
 				if scan.Peek() == scanner.EOF {
 					// is "**EOF" - to align with .gitignore just accept all
 					regStr += ".*"
 				} else {
 					// is "**"
-					// Note that this allows for any # of /'s (even 0) because
-					// the .* will eat everything, even /'s
-					regStr += "(.*" + escSL + ")?"
+					regStr += "((.*" + escSL + ")|([^" + escSL + "]*))"
+				}
+
+				// Treat **/ as ** so eat the "/"
+				if string(scan.Peek()) == sl {
+					scan.Next()
 				}
 			} else {
 				// is "*" so map it to anything but "/"
@@ -182,7 +180,7 @@ func regexpMatch(pattern, path string) (bool, error) {
 		} else if ch == '?' {
 			// "?" is any char except "/"
 			regStr += "[^" + escSL + "]"
-		} else if ch == '.' || ch == '$' {
+		} else if strings.Index(".$", string(ch)) != -1 {
 			// Escape some regexp special chars that have no meaning
 			// in golang's filepath.Match
 			regStr += `\` + string(ch)

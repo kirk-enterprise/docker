@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,10 +13,8 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/daemon/logger/loggerutils"
-	"github.com/docker/docker/pkg/urlutil"
 	"github.com/docker/go-units"
 	"github.com/fluent/fluent-logger-golang/fluent"
-	"github.com/pkg/errors"
 )
 
 type fluentd struct {
@@ -28,25 +25,20 @@ type fluentd struct {
 	extra         map[string]string
 }
 
-type location struct {
-	protocol string
-	host     string
-	port     int
-	path     string
-}
-
 const (
 	name = "fluentd"
 
-	defaultProtocol    = "tcp"
 	defaultHost        = "127.0.0.1"
 	defaultPort        = 24224
 	defaultBufferLimit = 1024 * 1024
+	defaultTagPrefix   = "docker"
 
 	// logger tries to reconnect 2**32 - 1 times
 	// failed (and panic) after 204 years [ 1.5 ** (2**32 - 1) - 1 seconds]
-	defaultRetryWait  = 1000
-	defaultMaxRetries = math.MaxInt32
+	defaultRetryWait              = 1000
+	defaultTimeout                = 3 * time.Second
+	defaultMaxRetries             = math.MaxInt32
+	defaultReconnectWaitIncreRate = 1.5
 
 	addressKey      = "fluentd-address"
 	bufferLimitKey  = "fluentd-buffer-limit"
@@ -68,7 +60,7 @@ func init() {
 // the context. The supported context configuration variable is
 // fluentd-address.
 func New(ctx logger.Context) (logger.Logger, error) {
-	loc, err := parseAddress(ctx.Config[addressKey])
+	host, port, err := parseAddress(ctx.Config[addressKey])
 	if err != nil {
 		return nil, err
 	}
@@ -115,14 +107,12 @@ func New(ctx logger.Context) (logger.Logger, error) {
 	}
 
 	fluentConfig := fluent.Config{
-		FluentPort:       loc.port,
-		FluentHost:       loc.host,
-		FluentNetwork:    loc.protocol,
-		FluentSocketPath: loc.path,
-		BufferLimit:      bufferLimit,
-		RetryWait:        retryWait,
-		MaxRetry:         maxRetries,
-		AsyncConnect:     asyncConnect,
+		FluentPort:   port,
+		FluentHost:   host,
+		BufferLimit:  bufferLimit,
+		RetryWait:    retryWait,
+		MaxRetry:     maxRetries,
+		AsyncConnect: asyncConnect,
 	}
 
 	logrus.WithField("container", ctx.ContainerID).WithField("config", fluentConfig).
@@ -182,62 +172,29 @@ func ValidateLogOpt(cfg map[string]string) error {
 		}
 	}
 
-	_, err := parseAddress(cfg["fluentd-address"])
-	return err
-}
-
-func parseAddress(address string) (*location, error) {
-	if address == "" {
-		return &location{
-			protocol: defaultProtocol,
-			host:     defaultHost,
-			port:     defaultPort,
-			path:     "",
-		}, nil
+	if _, _, err := parseAddress(cfg["fluentd-address"]); err != nil {
+		return err
 	}
 
-	protocol := defaultProtocol
-	givenAddress := address
-	if urlutil.IsTransportURL(address) {
-		url, err := url.Parse(address)
-		if err != nil {
-			return nil, errors.Wrapf(err, "invalid fluentd-address %s", givenAddress)
-		}
-		// unix and unixgram socket
-		if url.Scheme == "unix" || url.Scheme == "unixgram" {
-			return &location{
-				protocol: url.Scheme,
-				host:     "",
-				port:     0,
-				path:     url.Path,
-			}, nil
-		}
-		// tcp|udp
-		protocol = url.Scheme
-		address = url.Host
+	return nil
+}
+
+func parseAddress(address string) (string, int, error) {
+	if address == "" {
+		return defaultHost, defaultPort, nil
 	}
 
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		if !strings.Contains(err.Error(), "missing port in address") {
-			return nil, errors.Wrapf(err, "invalid fluentd-address %s", givenAddress)
+			return "", 0, fmt.Errorf("invalid fluentd-address %s: %s", address, err)
 		}
-		return &location{
-			protocol: protocol,
-			host:     host,
-			port:     defaultPort,
-			path:     "",
-		}, nil
+		return host, defaultPort, nil
 	}
 
 	portnum, err := strconv.Atoi(port)
 	if err != nil {
-		return nil, errors.Wrapf(err, "invalid fluentd-address %s", givenAddress)
+		return "", 0, fmt.Errorf("invalid fluentd-address %s: %s", address, err)
 	}
-	return &location{
-		protocol: protocol,
-		host:     host,
-		port:     portnum,
-		path:     "",
-	}, nil
+	return host, portnum, nil
 }
