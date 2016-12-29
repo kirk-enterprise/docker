@@ -71,9 +71,7 @@ func (s *DockerSuite) TestRunWithVolumesIsRecursive(c *check.C) {
 	c.Assert(err, checker.IsNil)
 	defer f.Close()
 
-	runCmd := exec.Command(dockerBinary, "run", "--name", "test-data", "--volume", fmt.Sprintf("%s:/tmp:ro", tmpDir), "busybox:latest", "ls", "/tmp/tmpfs")
-	out, _, _, err := runCommandWithStdoutStderr(runCmd)
-	c.Assert(err, checker.IsNil)
+	out, _ := dockerCmd(c, "run", "--name", "test-data", "--volume", fmt.Sprintf("%s:/tmp:ro", tmpDir), "busybox:latest", "ls", "/tmp/tmpfs")
 	c.Assert(out, checker.Contains, filepath.Base(f.Name()), check.Commentf("Recursive bind mount test failed. Expected file not found"))
 }
 
@@ -611,8 +609,7 @@ func (s *DockerSuite) TestRunOOMExitCode(c *check.C) {
 	errChan := make(chan error)
 	go func() {
 		defer close(errChan)
-		//changing memory to 40MB from 4MB due to an issue with GCCGO that test fails to start the container.
-		out, exitCode, _ := dockerCmdWithError("run", "-m", "40MB", "busybox", "sh", "-c", "x=a; while true; do x=$x$x$x$x; done")
+		out, exitCode, _ := dockerCmdWithError("run", "-m", "4MB", "busybox", "sh", "-c", "x=a; while true; do x=$x$x$x$x; done")
 		if expected := 137; exitCode != expected {
 			errChan <- fmt.Errorf("wrong exit code for OOM container: expected %d, got %d (output: %q)", expected, exitCode, out)
 		}
@@ -930,10 +927,10 @@ func (s *DockerSuite) TestRunSeccompProfileDenyUnshare(c *check.C) {
 	]
 }`
 	tmpFile, err := ioutil.TempFile("", "profile.json")
-	defer tmpFile.Close()
 	if err != nil {
 		c.Fatal(err)
 	}
+	defer tmpFile.Close()
 
 	if _, err := tmpFile.Write([]byte(jsonData)); err != nil {
 		c.Fatal(err)
@@ -1001,10 +998,10 @@ func (s *DockerSuite) TestRunSeccompProfileDenyUnshareUserns(c *check.C) {
 	]
 }`, uint64(0x10000000))
 	tmpFile, err := ioutil.TempFile("", "profile.json")
-	defer tmpFile.Close()
 	if err != nil {
 		c.Fatal(err)
 	}
+	defer tmpFile.Close()
 
 	if _, err := tmpFile.Write([]byte(jsonData)); err != nil {
 		c.Fatal(err)
@@ -1020,6 +1017,7 @@ func (s *DockerSuite) TestRunSeccompProfileDenyUnshareUserns(c *check.C) {
 // with a the default seccomp profile exits with operation not permitted.
 func (s *DockerSuite) TestRunSeccompProfileDenyCloneUserns(c *check.C) {
 	testRequires(c, SameHostDaemon, seccompEnabled)
+	ensureSyscallTest(c)
 
 	runCmd := exec.Command(dockerBinary, "run", "syscall-test", "userns-test", "id")
 	out, _, err := runCommandWithOutput(runCmd)
@@ -1032,6 +1030,7 @@ func (s *DockerSuite) TestRunSeccompProfileDenyCloneUserns(c *check.C) {
 // 'docker run --security-opt seccomp=unconfined syscall-test' allows creating a userns.
 func (s *DockerSuite) TestRunSeccompUnconfinedCloneUserns(c *check.C) {
 	testRequires(c, SameHostDaemon, seccompEnabled, UserNamespaceInKernel, NotUserNamespace, unprivilegedUsernsClone)
+	ensureSyscallTest(c)
 
 	// make sure running w privileged is ok
 	runCmd := exec.Command(dockerBinary, "run", "--security-opt", "seccomp=unconfined", "syscall-test", "userns-test", "id")
@@ -1044,6 +1043,7 @@ func (s *DockerSuite) TestRunSeccompUnconfinedCloneUserns(c *check.C) {
 // allows creating a userns.
 func (s *DockerSuite) TestRunSeccompAllowPrivCloneUserns(c *check.C) {
 	testRequires(c, SameHostDaemon, seccompEnabled, UserNamespaceInKernel, NotUserNamespace)
+	ensureSyscallTest(c)
 
 	// make sure running w privileged is ok
 	runCmd := exec.Command(dockerBinary, "run", "--privileged", "syscall-test", "userns-test", "id")
@@ -1056,6 +1056,7 @@ func (s *DockerSuite) TestRunSeccompAllowPrivCloneUserns(c *check.C) {
 // with the default seccomp profile.
 func (s *DockerSuite) TestRunSeccompProfileAllow32Bit(c *check.C) {
 	testRequires(c, SameHostDaemon, seccompEnabled, IsAmd64)
+	ensureSyscallTest(c)
 
 	runCmd := exec.Command(dockerBinary, "run", "syscall-test", "exit32-test", "id")
 	if out, _, err := runCommandWithOutput(runCmd); err != nil {
@@ -1076,6 +1077,7 @@ func (s *DockerSuite) TestRunSeccompAllowSetrlimit(c *check.C) {
 
 func (s *DockerSuite) TestRunSeccompDefaultProfileAcct(c *check.C) {
 	testRequires(c, SameHostDaemon, seccompEnabled, NotUserNamespace)
+	ensureSyscallTest(c)
 
 	out, _, err := dockerCmdWithError("run", "syscall-test", "acct-test")
 	if err == nil || !strings.Contains(out, "Operation not permitted") {
@@ -1105,6 +1107,7 @@ func (s *DockerSuite) TestRunSeccompDefaultProfileAcct(c *check.C) {
 
 func (s *DockerSuite) TestRunSeccompDefaultProfileNS(c *check.C) {
 	testRequires(c, SameHostDaemon, seccompEnabled, NotUserNamespace)
+	ensureSyscallTest(c)
 
 	out, _, err := dockerCmdWithError("run", "syscall-test", "ns-test", "echo", "hello0")
 	if err == nil || !strings.Contains(out, "Operation not permitted") {
@@ -1141,6 +1144,7 @@ func (s *DockerSuite) TestRunSeccompDefaultProfileNS(c *check.C) {
 // effective uid transtions on executing setuid binaries.
 func (s *DockerSuite) TestRunNoNewPrivSetuid(c *check.C) {
 	testRequires(c, DaemonIsLinux, NotUserNamespace, SameHostDaemon)
+	ensureNNPTest(c)
 
 	// test that running a setuid binary results in no effective uid transition
 	runCmd := exec.Command(dockerBinary, "run", "--security-opt", "no-new-privileges", "--user", "1000", "nnp-test", "/usr/bin/nnp-test")
@@ -1148,6 +1152,185 @@ func (s *DockerSuite) TestRunNoNewPrivSetuid(c *check.C) {
 		c.Fatalf("expected output to contain EUID=1000, got %s: %v", out, err)
 	}
 }
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesChown(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_CHOWN
+	runCmd := exec.Command(dockerBinary, "run", "busybox", "chown", "100", "/tmp")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_CHOWN
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "busybox", "chown", "100", "/tmp")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// test that root user can drop default capability CAP_CHOWN
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "chown", "busybox", "chown", "100", "/tmp")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesDacOverride(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_DAC_OVERRIDE
+	runCmd := exec.Command(dockerBinary, "run", "busybox", "sh", "-c", "echo test > /etc/passwd")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_DAC_OVERRIDE
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "busybox", "sh", "-c", "echo test > /etc/passwd")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Permission denied")
+	// TODO test that root user can drop default capability CAP_DAC_OVERRIDE
+}
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesFowner(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_FOWNER
+	runCmd := exec.Command(dockerBinary, "run", "busybox", "chmod", "777", "/etc/passwd")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_FOWNER
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "busybox", "chmod", "777", "/etc/passwd")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// TODO test that root user can drop default capability CAP_FOWNER
+}
+
+// TODO CAP_KILL
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesSetuid(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_SETUID
+	runCmd := exec.Command(dockerBinary, "run", "syscall-test", "setuid-test")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_SETUID
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "syscall-test", "setuid-test")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// test that root user can drop default capability CAP_SETUID
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "setuid", "syscall-test", "setuid-test")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesSetgid(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_SETGID
+	runCmd := exec.Command(dockerBinary, "run", "syscall-test", "setgid-test")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_SETGID
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "syscall-test", "setgid-test")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// test that root user can drop default capability CAP_SETGID
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "setgid", "syscall-test", "setgid-test")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+// TODO CAP_SETPCAP
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesNetBindService(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_NET_BIND_SERVICE
+	runCmd := exec.Command(dockerBinary, "run", "syscall-test", "socket-test")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_NET_BIND_SERVICE
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "syscall-test", "socket-test")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Permission denied")
+	// test that root user can drop default capability CAP_NET_BIND_SERVICE
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "net_bind_service", "syscall-test", "socket-test")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Permission denied")
+}
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesNetRaw(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_NET_RAW
+	runCmd := exec.Command(dockerBinary, "run", "syscall-test", "raw-test")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_NET_RAW
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "syscall-test", "raw-test")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// test that root user can drop default capability CAP_NET_RAW
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "net_raw", "syscall-test", "raw-test")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesChroot(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_SYS_CHROOT
+	runCmd := exec.Command(dockerBinary, "run", "busybox", "chroot", "/", "/bin/true")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_SYS_CHROOT
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "busybox", "chroot", "/", "/bin/true")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// test that root user can drop default capability CAP_SYS_CHROOT
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "sys_chroot", "busybox", "chroot", "/", "/bin/true")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+func (s *DockerSuite) TestUserNoEffectiveCapabilitiesMknod(c *check.C) {
+	testRequires(c, DaemonIsLinux, NotUserNamespace)
+	ensureSyscallTest(c)
+
+	// test that a root user has default capability CAP_MKNOD
+	runCmd := exec.Command(dockerBinary, "run", "busybox", "mknod", "/tmp/node", "b", "1", "2")
+	_, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, check.IsNil)
+	// test that non root user does not have default capability CAP_MKNOD
+	runCmd = exec.Command(dockerBinary, "run", "--user", "1000:1000", "busybox", "mknod", "/tmp/node", "b", "1", "2")
+	out, _, err := runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+	// test that root user can drop default capability CAP_MKNOD
+	runCmd = exec.Command(dockerBinary, "run", "--cap-drop", "mknod", "busybox", "mknod", "/tmp/node", "b", "1", "2")
+	out, _, err = runCommandWithOutput(runCmd)
+	c.Assert(err, checker.NotNil, check.Commentf(out))
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+// TODO CAP_AUDIT_WRITE
+// TODO CAP_SETFCAP
 
 func (s *DockerSuite) TestRunApparmorProcDirectory(c *check.C) {
 	testRequires(c, SameHostDaemon, Apparmor)
@@ -1167,7 +1350,7 @@ func (s *DockerSuite) TestRunApparmorProcDirectory(c *check.C) {
 // make sure the default profile can be successfully parsed (using unshare as it is
 // something which we know is blocked in the default profile)
 func (s *DockerSuite) TestRunSeccompWithDefaultProfile(c *check.C) {
-	testRequires(c, SameHostDaemon, seccompEnabled, NotArm, NotPpc64le, NotS390X)
+	testRequires(c, SameHostDaemon, seccompEnabled)
 
 	out, _, err := dockerCmdWithError("run", "--security-opt", "seccomp=../profiles/seccomp/default.json", "debian:jessie", "unshare", "--map-root-user", "--user", "sh", "-c", "whoami")
 	c.Assert(err, checker.NotNil, check.Commentf(out))
@@ -1223,16 +1406,16 @@ func (s *DockerSuite) TestRunDeviceSymlink(c *check.C) {
 	c.Assert(strings.Trim(out, "\r\n"), checker.Contains, "bb7df04e1b0a2570657527a7e108ae23", check.Commentf("expected output bb7df04e1b0a2570657527a7e108ae23"))
 }
 
-// TestRunPidsLimit makes sure the pids cgroup is set with --pids-limit
-func (s *DockerSuite) TestRunPidsLimit(c *check.C) {
+// TestRunPIDsLimit makes sure the pids cgroup is set with --pids-limit
+func (s *DockerSuite) TestRunPIDsLimit(c *check.C) {
 	testRequires(c, pidsLimit)
 
 	file := "/sys/fs/cgroup/pids/pids.max"
-	out, _ := dockerCmd(c, "run", "--name", "skittles", "--pids-limit", "2", "busybox", "cat", file)
-	c.Assert(strings.TrimSpace(out), checker.Equals, "2")
+	out, _ := dockerCmd(c, "run", "--name", "skittles", "--pids-limit", "4", "busybox", "cat", file)
+	c.Assert(strings.TrimSpace(out), checker.Equals, "4")
 
 	out = inspectField(c, "skittles", "HostConfig.PidsLimit")
-	c.Assert(out, checker.Equals, "2", check.Commentf("setting the pids limit failed"))
+	c.Assert(out, checker.Equals, "4", check.Commentf("setting the pids limit failed"))
 }
 
 func (s *DockerSuite) TestRunPrivilegedAllowedDevices(c *check.C) {
@@ -1259,4 +1442,144 @@ func (s *DockerSuite) TestRunUserDeviceAllowed(c *check.C) {
 	file := "/sys/fs/cgroup/devices/devices.list"
 	out, _ := dockerCmd(c, "run", "--device", "/dev/snd/timer:w", "busybox", "cat", file)
 	c.Assert(out, checker.Contains, fmt.Sprintf("c %d:%d w", stat.Rdev/256, stat.Rdev%256))
+}
+
+func (s *DockerDaemonSuite) TestRunSeccompJSONNewFormat(c *check.C) {
+	testRequires(c, SameHostDaemon, seccompEnabled)
+
+	s.d.StartWithBusybox(c)
+
+	jsonData := `{
+	"defaultAction": "SCMP_ACT_ALLOW",
+	"syscalls": [
+		{
+			"names": ["chmod", "fchmod", "fchmodat"],
+			"action": "SCMP_ACT_ERRNO"
+		}
+	]
+}`
+	tmpFile, err := ioutil.TempFile("", "profile.json")
+	c.Assert(err, check.IsNil)
+	defer tmpFile.Close()
+	_, err = tmpFile.Write([]byte(jsonData))
+	c.Assert(err, check.IsNil)
+
+	out, err := s.d.Cmd("run", "--security-opt", "seccomp="+tmpFile.Name(), "busybox", "chmod", "777", ".")
+	c.Assert(err, check.NotNil)
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+func (s *DockerDaemonSuite) TestRunSeccompJSONNoNameAndNames(c *check.C) {
+	testRequires(c, SameHostDaemon, seccompEnabled)
+
+	s.d.StartWithBusybox(c)
+
+	jsonData := `{
+	"defaultAction": "SCMP_ACT_ALLOW",
+	"syscalls": [
+		{
+			"name": "chmod",
+			"names": ["fchmod", "fchmodat"],
+			"action": "SCMP_ACT_ERRNO"
+		}
+	]
+}`
+	tmpFile, err := ioutil.TempFile("", "profile.json")
+	c.Assert(err, check.IsNil)
+	defer tmpFile.Close()
+	_, err = tmpFile.Write([]byte(jsonData))
+	c.Assert(err, check.IsNil)
+
+	out, err := s.d.Cmd("run", "--security-opt", "seccomp="+tmpFile.Name(), "busybox", "chmod", "777", ".")
+	c.Assert(err, check.NotNil)
+	c.Assert(out, checker.Contains, "'name' and 'names' were specified in the seccomp profile, use either 'name' or 'names'")
+}
+
+func (s *DockerDaemonSuite) TestRunSeccompJSONNoArchAndArchMap(c *check.C) {
+	testRequires(c, SameHostDaemon, seccompEnabled)
+
+	s.d.StartWithBusybox(c)
+
+	jsonData := `{
+	"archMap": [
+		{
+			"architecture": "SCMP_ARCH_X86_64",
+			"subArchitectures": [
+				"SCMP_ARCH_X86",
+				"SCMP_ARCH_X32"
+			]
+		}
+	],
+	"architectures": [
+		"SCMP_ARCH_X32"
+	],
+	"defaultAction": "SCMP_ACT_ALLOW",
+	"syscalls": [
+		{
+			"names": ["chmod", "fchmod", "fchmodat"],
+			"action": "SCMP_ACT_ERRNO"
+		}
+	]
+}`
+	tmpFile, err := ioutil.TempFile("", "profile.json")
+	c.Assert(err, check.IsNil)
+	defer tmpFile.Close()
+	_, err = tmpFile.Write([]byte(jsonData))
+	c.Assert(err, check.IsNil)
+
+	out, err := s.d.Cmd("run", "--security-opt", "seccomp="+tmpFile.Name(), "busybox", "chmod", "777", ".")
+	c.Assert(err, check.NotNil)
+	c.Assert(out, checker.Contains, "'architectures' and 'archMap' were specified in the seccomp profile, use either 'architectures' or 'archMap'")
+}
+
+func (s *DockerDaemonSuite) TestRunWithDaemonDefaultSeccompProfile(c *check.C) {
+	testRequires(c, SameHostDaemon, seccompEnabled)
+
+	s.d.StartWithBusybox(c)
+
+	// 1) verify I can run containers with the Docker default shipped profile which allows chmod
+	_, err := s.d.Cmd("run", "busybox", "chmod", "777", ".")
+	c.Assert(err, check.IsNil)
+
+	jsonData := `{
+	"defaultAction": "SCMP_ACT_ALLOW",
+	"syscalls": [
+		{
+			"name": "chmod",
+			"action": "SCMP_ACT_ERRNO"
+		}
+	]
+}`
+	tmpFile, err := ioutil.TempFile("", "profile.json")
+	c.Assert(err, check.IsNil)
+	defer tmpFile.Close()
+	_, err = tmpFile.Write([]byte(jsonData))
+	c.Assert(err, check.IsNil)
+
+	// 2) restart the daemon and add a custom seccomp profile in which we deny chmod
+	s.d.Restart(c, "--seccomp-profile="+tmpFile.Name())
+
+	out, err := s.d.Cmd("run", "busybox", "chmod", "777", ".")
+	c.Assert(err, check.NotNil)
+	c.Assert(out, checker.Contains, "Operation not permitted")
+}
+
+func (s *DockerSuite) TestRunWithNanoCPUs(c *check.C) {
+	testRequires(c, cpuCfsQuota, cpuCfsPeriod)
+
+	file1 := "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
+	file2 := "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
+	out, _ := dockerCmd(c, "run", "--cpus", "0.5", "--name", "test", "busybox", "sh", "-c", fmt.Sprintf("cat %s && cat %s", file1, file2))
+	c.Assert(strings.TrimSpace(out), checker.Equals, "50000\n100000")
+
+	out = inspectField(c, "test", "HostConfig.NanoCpus")
+	c.Assert(out, checker.Equals, "5e+08", check.Commentf("setting the Nano CPUs failed"))
+	out = inspectField(c, "test", "HostConfig.CpuQuota")
+	c.Assert(out, checker.Equals, "0", check.Commentf("CPU CFS quota should be 0"))
+	out = inspectField(c, "test", "HostConfig.CpuPeriod")
+	c.Assert(out, checker.Equals, "0", check.Commentf("CPU CFS period should be 0"))
+
+	out, _, err := dockerCmdWithError("run", "--cpus", "0.5", "--cpu-quota", "50000", "--cpu-period", "100000", "busybox", "sh")
+	c.Assert(err, check.NotNil)
+	c.Assert(out, checker.Contains, "Conflicting options: Nano CPUs and CPU Period cannot both be set")
 }
