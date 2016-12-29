@@ -5,17 +5,15 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/net/context"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/types"
-	containertypes "github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/exec"
+	"github.com/docker/engine-api/types"
+	"github.com/docker/engine-api/types/strslice"
 )
 
 const (
@@ -61,10 +59,13 @@ type cmdProbe struct {
 // exec the healthcheck command in the container.
 // Returns the exit code and probe output (if any)
 func (p *cmdProbe) run(ctx context.Context, d *Daemon, container *container.Container) (*types.HealthcheckResult, error) {
-
 	cmdSlice := strslice.StrSlice(container.Config.Healthcheck.Test)[1:]
 	if p.shell {
-		cmdSlice = append(getShell(container.Config), cmdSlice...)
+		if runtime.GOOS != "windows" {
+			cmdSlice = append([]string{"/bin/sh", "-c"}, cmdSlice...)
+		} else {
+			cmdSlice = append([]string{"cmd", "/S", "/C"}, cmdSlice...)
+		}
 	}
 	entrypoint, args := d.getEntrypointAndArgs(strslice.StrSlice{}, cmdSlice)
 	execConfig := exec.NewConfig()
@@ -92,7 +93,7 @@ func (p *cmdProbe) run(ctx context.Context, d *Daemon, container *container.Cont
 		return nil, err
 	}
 	if info.ExitCode == nil {
-		return nil, fmt.Errorf("Healthcheck for container %s has no exit code!", container.ID)
+		return nil, fmt.Errorf("Healthcheck has no exit code!")
 	}
 	// Note: Go's json package will handle invalid UTF-8 for us
 	out := output.String()
@@ -104,16 +105,9 @@ func (p *cmdProbe) run(ctx context.Context, d *Daemon, container *container.Cont
 }
 
 // Update the container's Status.Health struct based on the latest probe's result.
-func handleProbeResult(d *Daemon, c *container.Container, result *types.HealthcheckResult, done chan struct{}) {
+func handleProbeResult(d *Daemon, c *container.Container, result *types.HealthcheckResult) {
 	c.Lock()
 	defer c.Unlock()
-
-	// probe may have been cancelled while waiting on lock. Ignore result then
-	select {
-	case <-done:
-		return
-	default:
-	}
 
 	retries := c.Config.Healthcheck.Retries
 	if retries <= 0 {
@@ -154,19 +148,17 @@ func monitor(d *Daemon, c *container.Container, stop chan struct{}, probe probe)
 	for {
 		select {
 		case <-stop:
-			logrus.Debugf("Stop healthcheck monitoring for container %s (received while idle)", c.ID)
+			logrus.Debug("Stop healthcheck monitoring (received while idle)")
 			return
 		case <-time.After(probeInterval):
-			logrus.Debugf("Running health check for container %s ...", c.ID)
+			logrus.Debug("Running health check...")
 			startTime := time.Now()
 			ctx, cancelProbe := context.WithTimeout(context.Background(), probeTimeout)
 			results := make(chan *types.HealthcheckResult)
 			go func() {
-				healthChecksCounter.Inc()
 				result, err := probe.run(ctx, d, c)
 				if err != nil {
-					healthChecksFailedCounter.Inc()
-					logrus.Warnf("Health check for container %s error: %v", c.ID, err)
+					logrus.Warnf("Health check error: %v", err)
 					results <- &types.HealthcheckResult{
 						ExitCode: -1,
 						Output:   err.Error(),
@@ -175,29 +167,29 @@ func monitor(d *Daemon, c *container.Container, stop chan struct{}, probe probe)
 					}
 				} else {
 					result.Start = startTime
-					logrus.Debugf("Health check for container %s done (exitCode=%d)", c.ID, result.ExitCode)
+					logrus.Debugf("Health check done (exitCode=%d)", result.ExitCode)
 					results <- result
 				}
 				close(results)
 			}()
 			select {
 			case <-stop:
-				logrus.Debugf("Stop healthcheck monitoring for container %s (received while probing)", c.ID)
+				logrus.Debug("Stop healthcheck monitoring (received while probing)")
 				// Stop timeout and kill probe, but don't wait for probe to exit.
 				cancelProbe()
 				return
 			case result := <-results:
-				handleProbeResult(d, c, result, stop)
+				handleProbeResult(d, c, result)
 				// Stop timeout
 				cancelProbe()
 			case <-ctx.Done():
-				logrus.Debugf("Health check for container %s taking too long", c.ID)
+				logrus.Debug("Health check taking too long")
 				handleProbeResult(d, c, &types.HealthcheckResult{
 					ExitCode: -1,
 					Output:   fmt.Sprintf("Health check exceeded timeout (%v)", probeTimeout),
 					Start:    startTime,
 					End:      time.Now(),
-				}, stop)
+				})
 				cancelProbe()
 				// Wait for probe to exit (it might take a while to respond to the TERM
 				// signal and we don't want dying probes to pile up).
@@ -220,7 +212,7 @@ func getProbe(c *container.Container) probe {
 	case "CMD-SHELL":
 		return &cmdProbe{shell: true}
 	default:
-		logrus.Warnf("Unknown healthcheck type '%s' (expected 'CMD') in container %s", config.Test[0], c.ID)
+		logrus.Warnf("Unknown healthcheck type '%s' (expected 'CMD')", config.Test[0])
 		return nil
 	}
 }
@@ -258,10 +250,7 @@ func (d *Daemon) initHealthMonitor(c *container.Container) {
 	// This is needed in case we're auto-restarting
 	d.stopHealthchecks(c)
 
-	if h := c.State.Health; h != nil {
-		h.Status = types.Starting
-		h.FailingStreak = 0
-	} else {
+	if c.State.Health == nil {
 		h := &container.Health{}
 		h.Status = types.Starting
 		c.State.Health = h
@@ -282,15 +271,11 @@ func (d *Daemon) stopHealthchecks(c *container.Container) {
 // Buffer up to maxOutputLen bytes. Further data is discarded.
 type limitedBuffer struct {
 	buf       bytes.Buffer
-	mu        sync.Mutex
 	truncated bool // indicates that data has been lost
 }
 
 // Append to limitedBuffer while there is room.
 func (b *limitedBuffer) Write(data []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	bufLen := b.buf.Len()
 	dataLen := len(data)
 	keep := min(maxOutputLen-bufLen, dataLen)
@@ -305,9 +290,6 @@ func (b *limitedBuffer) Write(data []byte) (int, error) {
 
 // The contents of the buffer, with "..." appended if it overflowed.
 func (b *limitedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	out := b.buf.String()
 	if b.truncated {
 		out = out + "..."
@@ -328,14 +310,4 @@ func min(x, y int) int {
 		return x
 	}
 	return y
-}
-
-func getShell(config *containertypes.Config) []string {
-	if len(config.Shell) != 0 {
-		return config.Shell
-	}
-	if runtime.GOOS != "windows" {
-		return []string{"/bin/sh", "-c"}
-	}
-	return []string{"cmd", "/S", "/C"}
 }

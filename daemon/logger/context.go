@@ -75,7 +75,9 @@ func (ctx *Context) Hostname() (string, error) {
 // arguments.
 func (ctx *Context) Command() string {
 	terms := []string{ctx.ContainerEntrypoint}
-	terms = append(terms, ctx.ContainerArgs...)
+	for _, arg := range ctx.ContainerArgs {
+		terms = append(terms, arg)
+	}
 	command := strings.Join(terms, " ")
 	return command
 }
@@ -92,7 +94,7 @@ func (ctx *Context) FullID() string {
 
 // Name returns the ContainerName without a preceding '/'.
 func (ctx *Context) Name() string {
-	return strings.TrimPrefix(ctx.ContainerName, "/")
+	return ctx.ContainerName[1:]
 }
 
 // ImageID returns the ContainerImageID shortened to 12 characters.

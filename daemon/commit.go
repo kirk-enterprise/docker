@@ -3,20 +3,21 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/backend"
-	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/builder/dockerfile"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/dockerversion"
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/layer"
+	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/ioutils"
 	"github.com/docker/docker/reference"
+	containertypes "github.com/docker/engine-api/types/container"
+	"github.com/docker/go-connections/nat"
 )
 
 // merge merges two Config, the image container configuration (defaults values),
@@ -31,6 +32,9 @@ func merge(userConf, imageConf *containertypes.Config) error {
 	if len(userConf.ExposedPorts) == 0 {
 		userConf.ExposedPorts = imageConf.ExposedPorts
 	} else if imageConf.ExposedPorts != nil {
+		if userConf.ExposedPorts == nil {
+			userConf.ExposedPorts = make(nat.PortSet)
+		}
 		for port := range imageConf.ExposedPorts {
 			if _, exists := userConf.ExposedPorts[port]; !exists {
 				userConf.ExposedPorts[port] = struct{}{}
@@ -46,11 +50,6 @@ func merge(userConf, imageConf *containertypes.Config) error {
 			imageEnvKey := strings.Split(imageEnv, "=")[0]
 			for _, userEnv := range userConf.Env {
 				userEnvKey := strings.Split(userEnv, "=")[0]
-				if runtime.GOOS == "windows" {
-					// Case insensitive environment variables on Windows
-					imageEnvKey = strings.ToUpper(imageEnvKey)
-					userEnvKey = strings.ToUpper(userEnvKey)
-				}
 				if imageEnvKey == userEnvKey {
 					found = true
 					break
@@ -65,10 +64,11 @@ func merge(userConf, imageConf *containertypes.Config) error {
 	if userConf.Labels == nil {
 		userConf.Labels = map[string]string{}
 	}
-	for l, v := range imageConf.Labels {
-		if _, ok := userConf.Labels[l]; !ok {
-			userConf.Labels[l] = v
+	if imageConf.Labels != nil {
+		for l := range userConf.Labels {
+			imageConf.Labels[l] = userConf.Labels[l]
 		}
+		userConf.Labels = imageConf.Labels
 	}
 
 	if len(userConf.Entrypoint) == 0 {
@@ -120,15 +120,14 @@ func merge(userConf, imageConf *containertypes.Config) error {
 // Commit creates a new filesystem image from the current state of a container.
 // The image can optionally be tagged into a repository.
 func (daemon *Daemon) Commit(name string, c *backend.ContainerCommitConfig) (string, error) {
-	start := time.Now()
 	container, err := daemon.GetContainer(name)
 	if err != nil {
 		return "", err
 	}
 
-	// It is not possible to commit a running container on Windows and on Solaris.
-	if (runtime.GOOS == "windows" || runtime.GOOS == "solaris") && container.IsRunning() {
-		return "", fmt.Errorf("%+v does not support commit of a running container", runtime.GOOS)
+	// It is not possible to commit a running container on Windows
+	if runtime.GOOS == "windows" && container.IsRunning() {
+		return "", fmt.Errorf("Windows does not support commit of a running container")
 	}
 
 	if c.Pause && !container.IsPaused() {
@@ -226,7 +225,6 @@ func (daemon *Daemon) Commit(name string, c *backend.ContainerCommitConfig) (str
 		}
 	}
 
-	imageRef := ""
 	if c.Repo != "" {
 		newTag, err := reference.WithName(c.Repo) // todo: should move this to API layer
 		if err != nil {
@@ -240,20 +238,16 @@ func (daemon *Daemon) Commit(name string, c *backend.ContainerCommitConfig) (str
 		if err := daemon.TagImageWithReference(id, newTag); err != nil {
 			return "", err
 		}
-		imageRef = newTag.String()
 	}
 
 	attributes := map[string]string{
-		"comment":  c.Comment,
-		"imageID":  id.String(),
-		"imageRef": imageRef,
+		"comment": c.Comment,
 	}
 	daemon.LogContainerEventWithAttributes(container, "commit", attributes)
-	containerActions.WithValues("commit").UpdateSince(start)
 	return id.String(), nil
 }
 
-func (daemon *Daemon) exportContainerRw(container *container.Container) (io.ReadCloser, error) {
+func (daemon *Daemon) exportContainerRw(container *container.Container) (archive.Archive, error) {
 	if err := daemon.Mount(container); err != nil {
 		return nil, err
 	}

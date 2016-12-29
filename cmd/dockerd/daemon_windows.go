@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"syscall"
 
 	"github.com/Sirupsen/logrus"
@@ -12,7 +11,7 @@ import (
 	"github.com/docker/docker/pkg/system"
 )
 
-var defaultDaemonConfigFile = ""
+var defaultDaemonConfigFile = os.Getenv("programdata") + string(os.PathSeparator) + "docker" + string(os.PathSeparator) + "config" + string(os.PathSeparator) + "daemon.json"
 
 // currentUserIsOwner checks whether the current user is the owner of the given
 // file.
@@ -25,8 +24,8 @@ func setDefaultUmask() error {
 	return nil
 }
 
-func getDaemonConfDir(root string) string {
-	return filepath.Join(root, `\config`)
+func getDaemonConfDir() string {
+	return os.Getenv("PROGRAMDATA") + `\docker\config`
 }
 
 // notifySystem sends a message to the host when the server is ready to be used
@@ -42,9 +41,6 @@ func notifySystem() {
 // notifyShutdown is called after the daemon shuts down but before the process exits.
 func notifyShutdown(err error) {
 	if service != nil {
-		if err != nil {
-			logrus.Fatal(err)
-		}
 		service.stopped(err)
 	}
 }
@@ -74,12 +70,6 @@ func (cli *DaemonCli) getPlatformRemoteOptions() []libcontainerd.RemoteOption {
 // state. The Windows libcontainerd implementation does not need to write a spec
 // or state to disk, so this is a no-op.
 func (cli *DaemonCli) getLibcontainerdRoot() string {
-	return ""
-}
-
-// getSwarmRunRoot gets the root directory for swarm to store runtime state
-// For example, the control socket
-func (cli *DaemonCli) getSwarmRunRoot() string {
 	return ""
 }
 

@@ -17,7 +17,6 @@ import (
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/system"
 	"github.com/docker/docker/reference"
-	"github.com/pkg/errors"
 )
 
 type imageDescriptor struct {
@@ -78,11 +77,11 @@ func (l *tarexporter) parseNames(names []string) (map[image.ID]*imageDescriptor,
 			return nil, err
 		}
 		if id != "" {
-			_, err := l.is.Get(image.IDFromDigest(id))
+			_, err := l.is.Get(image.ID(id))
 			if err != nil {
 				return nil, err
 			}
-			addAssoc(image.IDFromDigest(id), nil)
+			addAssoc(image.ID(id), nil)
 			continue
 		}
 		if ref.Name() == string(digest.Canonical) {
@@ -96,7 +95,7 @@ func (l *tarexporter) parseNames(names []string) (map[image.ID]*imageDescriptor,
 		if reference.IsNameOnly(ref) {
 			assocs := l.rs.ReferencesByName(ref)
 			for _, assoc := range assocs {
-				addAssoc(image.IDFromDigest(assoc.ID), assoc.Ref)
+				addAssoc(assoc.ImageID, assoc.Ref)
 			}
 			if len(assocs) == 0 {
 				imgID, err := l.is.Search(name)
@@ -107,11 +106,11 @@ func (l *tarexporter) parseNames(names []string) (map[image.ID]*imageDescriptor,
 			}
 			continue
 		}
-		id, err = l.rs.Get(ref)
-		if err != nil {
+		var imgID image.ID
+		if imgID, err = l.rs.Get(ref); err != nil {
 			return nil, err
 		}
-		addAssoc(image.IDFromDigest(id), ref)
+		addAssoc(imgID, ref)
 
 	}
 	return imgDescr, nil
@@ -156,7 +155,7 @@ func (s *saveSession) save(outStream io.Writer) error {
 		}
 
 		manifest = append(manifest, manifestItem{
-			Config:       id.Digest().Hex() + ".json",
+			Config:       digest.Digest(id).Hex() + ".json",
 			RepoTags:     repoTags,
 			Layers:       layers,
 			LayerSources: foreignSrcs,
@@ -215,8 +214,10 @@ func (s *saveSession) save(outStream io.Writer) error {
 	}
 	defer fs.Close()
 
-	_, err = io.Copy(outStream, fs)
-	return err
+	if _, err := io.Copy(outStream, fs); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *saveSession) saveImage(id image.ID) (map[layer.DiffID]distribution.Descriptor, error) {
@@ -233,9 +234,7 @@ func (s *saveSession) saveImage(id image.ID) (map[layer.DiffID]distribution.Desc
 	var layers []string
 	var foreignSrcs map[layer.DiffID]distribution.Descriptor
 	for i := range img.RootFS.DiffIDs {
-		v1Img := image.V1Image{
-			Created: img.Created,
-		}
+		v1Img := image.V1Image{}
 		if i == len(img.RootFS.DiffIDs)-1 {
 			v1Img = img.V1Image
 		}
@@ -265,7 +264,7 @@ func (s *saveSession) saveImage(id image.ID) (map[layer.DiffID]distribution.Desc
 		}
 	}
 
-	configFile := filepath.Join(s.outDir, id.Digest().Hex()+".json")
+	configFile := filepath.Join(s.outDir, digest.Digest(id).Hex()+".json")
 	if err := ioutil.WriteFile(configFile, img.RawJSON(), 0644); err != nil {
 		return nil, err
 	}
@@ -314,14 +313,10 @@ func (s *saveSession) saveLayer(id layer.ChainID, legacyImg image.V1Image, creat
 		if err != nil {
 			return distribution.Descriptor{}, err
 		}
-		if err := os.Symlink(relPath, layerPath); err != nil {
-			return distribution.Descriptor{}, errors.Wrap(err, "error creating symlink while saving layer")
-		}
+		os.Symlink(relPath, layerPath)
 	} else {
-		// Use system.CreateSequential rather than os.Create. This ensures sequential
-		// file access on Windows to avoid eating into MM standby list.
-		// On Linux, this equates to a regular os.Create.
-		tarFile, err := system.CreateSequential(layerPath)
+
+		tarFile, err := os.Create(layerPath)
 		if err != nil {
 			return distribution.Descriptor{}, err
 		}

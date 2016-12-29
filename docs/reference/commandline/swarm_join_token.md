@@ -1,22 +1,17 @@
----
-title: "swarm join-token"
-description: "The swarm join-token command description and usage"
-keywords: "swarm, join-token"
----
-
-<!-- This file is maintained within the docker/docker Github
-     repository at https://github.com/docker/docker/. Make all
-     pull requests against that repo. If you see this file in
-     another repository, consider it read-only there, as it will
-     periodically be overwritten by the definitive file. Pull
-     requests which include edits to this file in other repositories
-     will be rejected.
--->
+<!--[metadata]>
++++
+title = "swarm join-token"
+description = "The swarm join-token command description and usage"
+keywords = ["swarm, join-token"]
+[menu.main]
+parent = "smn_cli"
++++
+<![end-metadata]-->
 
 # swarm join-token
 
 ```markdown
-Usage:	docker swarm join-token [OPTIONS] (worker|manager)
+Usage:	docker swarm join-token [--rotate] (worker|manager)
 
 Manage join tokens
 
@@ -58,7 +53,7 @@ Use the `--rotate` flag to generate a new join token for the specified role:
 
 ```bash
 $ docker swarm join-token --rotate worker
-Successfully rotated worker join token.
+Succesfully rotated worker join token.
 
 To add a worker to this swarm, run the following command:
 
@@ -102,9 +97,4 @@ Only print the token. Do not print a complete command for joining.
 
 ## Related information
 
-* [swarm init](swarm_init.md)
 * [swarm join](swarm_join.md)
-* [swarm leave](swarm_leave.md)
-* [swarm unlock](swarm_unlock.md)
-* [swarm unlock-key](swarm_unlock_key.md)
-* [swarm update](swarm_update.md)

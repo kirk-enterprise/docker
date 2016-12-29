@@ -35,7 +35,7 @@ func parseSubCommand(rest string, d *Directive) (*Node, map[string]bool, error) 
 		return nil, nil, nil
 	}
 
-	_, child, err := ParseLine(rest, d, false)
+	_, child, err := ParseLine(rest, d)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -357,5 +357,5 @@ func parseHealthConfig(rest string, d *Directive) (*Node, map[string]bool, error
 		return nil, nil, err
 	}
 
-	return &Node{Value: typ, Next: cmd}, attrs, err
+	return &Node{Value: typ, Next: cmd, Attributes: attrs}, nil, err
 }
