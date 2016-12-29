@@ -1,122 +1,256 @@
+// +build experimental
+
 package plugin
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/distribution/digest"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/image"
-	"github.com/docker/docker/layer"
 	"github.com/docker/docker/libcontainerd"
 	"github.com/docker/docker/pkg/ioutils"
-	"github.com/docker/docker/pkg/mount"
-	"github.com/docker/docker/plugin/v2"
+	"github.com/docker/docker/pkg/plugins"
 	"github.com/docker/docker/reference"
 	"github.com/docker/docker/registry"
-	"github.com/pkg/errors"
+	"github.com/docker/docker/restartmanager"
+	"github.com/docker/engine-api/types"
 )
 
-const configFileName = "config.json"
-const rootFSFileName = "rootfs"
+const defaultPluginRuntimeDestination = "/run/docker/plugins"
 
-var validFullID = regexp.MustCompile(`^([a-f0-9]{64})$`)
+var manager *Manager
 
-func (pm *Manager) restorePlugin(p *v2.Plugin) error {
-	if p.IsEnabled() {
+// ErrNotFound indicates that a plugin was not found locally.
+type ErrNotFound string
+
+func (name ErrNotFound) Error() string { return fmt.Sprintf("plugin %q not found", string(name)) }
+
+// ErrInadequateCapability indicates that a plugin was found but did not have the requested capability.
+type ErrInadequateCapability struct {
+	name       string
+	capability string
+}
+
+func (e ErrInadequateCapability) Error() string {
+	return fmt.Sprintf("plugin %q found, but not with %q capability", e.name, e.capability)
+}
+
+type plugin struct {
+	//sync.RWMutex TODO
+	PluginObj         types.Plugin `json:"plugin"`
+	client            *plugins.Client
+	restartManager    restartmanager.RestartManager
+	runtimeSourcePath string
+	exitChan          chan bool
+}
+
+func (p *plugin) Client() *plugins.Client {
+	return p.client
+}
+
+// IsLegacy returns true for legacy plugins and false otherwise.
+func (p *plugin) IsLegacy() bool {
+	return false
+}
+
+func (p *plugin) Name() string {
+	name := p.PluginObj.Name
+	if len(p.PluginObj.Tag) > 0 {
+		// TODO: this feels hacky, maybe we should be storing the distribution reference rather than splitting these
+		name += ":" + p.PluginObj.Tag
+	}
+	return name
+}
+
+func (pm *Manager) newPlugin(ref reference.Named, id string) *plugin {
+	p := &plugin{
+		PluginObj: types.Plugin{
+			Name: ref.Name(),
+			ID:   id,
+		},
+		runtimeSourcePath: filepath.Join(pm.runRoot, id),
+	}
+	if ref, ok := ref.(reference.NamedTagged); ok {
+		p.PluginObj.Tag = ref.Tag()
+	}
+	return p
+}
+
+func (pm *Manager) restorePlugin(p *plugin) error {
+	p.runtimeSourcePath = filepath.Join(pm.runRoot, p.PluginObj.ID)
+	if p.PluginObj.Active {
 		return pm.restore(p)
 	}
 	return nil
 }
 
+type pluginMap map[string]*plugin
 type eventLogger func(id, name, action string)
-
-// ManagerConfig defines configuration needed to start new manager.
-type ManagerConfig struct {
-	Store              *Store // remove
-	Executor           libcontainerd.Remote
-	RegistryService    registry.Service
-	LiveRestoreEnabled bool // TODO: remove
-	LogPluginEvent     eventLogger
-	Root               string
-	ExecRoot           string
-}
 
 // Manager controls the plugin subsystem.
 type Manager struct {
-	config           ManagerConfig
-	mu               sync.RWMutex // protects cMap
-	muGC             sync.RWMutex // protects blobstore deletions
-	cMap             map[*v2.Plugin]*controller
-	containerdClient libcontainerd.Client
-	blobStore        *basicBlobStore
+	sync.RWMutex
+	libRoot           string
+	runRoot           string
+	plugins           pluginMap // TODO: figure out why save() doesn't json encode *plugin object
+	nameToID          map[string]string
+	handlers          map[string]func(string, *plugins.Client)
+	containerdClient  libcontainerd.Client
+	registryService   registry.Service
+	handleLegacy      bool
+	liveRestore       bool
+	shutdown          bool
+	pluginEventLogger eventLogger
 }
 
-// controller represents the manager's control on a plugin.
-type controller struct {
-	restart       bool
-	exitChan      chan bool
-	timeoutInSecs int
+// GetManager returns the singleton plugin Manager
+func GetManager() *Manager {
+	return manager
 }
 
-// pluginRegistryService ensures that all resolved repositories
-// are of the plugin class.
-type pluginRegistryService struct {
-	registry.Service
-}
+// Init (was NewManager) instantiates the singleton Manager.
+// TODO: revert this to NewManager once we get rid of all the singletons.
+func Init(root string, remote libcontainerd.Remote, rs registry.Service, liveRestore bool, evL eventLogger) (err error) {
+	if manager != nil {
+		return nil
+	}
 
-func (s pluginRegistryService) ResolveRepository(name reference.Named) (repoInfo *registry.RepositoryInfo, err error) {
-	repoInfo, err = s.Service.ResolveRepository(name)
-	if repoInfo != nil {
-		repoInfo.Class = "plugin"
+	root = filepath.Join(root, "plugins")
+	manager = &Manager{
+		libRoot:           root,
+		runRoot:           "/run/docker",
+		plugins:           make(map[string]*plugin),
+		nameToID:          make(map[string]string),
+		handlers:          make(map[string]func(string, *plugins.Client)),
+		registryService:   rs,
+		handleLegacy:      true,
+		liveRestore:       liveRestore,
+		pluginEventLogger: evL,
 	}
-	return
-}
-
-// NewManager returns a new plugin manager.
-func NewManager(config ManagerConfig) (*Manager, error) {
-	if config.RegistryService != nil {
-		config.RegistryService = pluginRegistryService{config.RegistryService}
+	if err := os.MkdirAll(manager.runRoot, 0700); err != nil {
+		return err
 	}
-	manager := &Manager{
-		config: config,
-	}
-	if err := os.MkdirAll(manager.config.Root, 0700); err != nil {
-		return nil, errors.Wrapf(err, "failed to mkdir %v", manager.config.Root)
-	}
-	if err := os.MkdirAll(manager.config.ExecRoot, 0700); err != nil {
-		return nil, errors.Wrapf(err, "failed to mkdir %v", manager.config.ExecRoot)
-	}
-	if err := os.MkdirAll(manager.tmpDir(), 0700); err != nil {
-		return nil, errors.Wrapf(err, "failed to mkdir %v", manager.tmpDir())
-	}
-	var err error
-	manager.containerdClient, err = config.Executor.Client(manager) // todo: move to another struct
+	manager.containerdClient, err = remote.Client(manager)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create containerd client")
+		return err
 	}
-	manager.blobStore, err = newBasicBlobStore(filepath.Join(manager.config.Root, "storage/blobs"))
-	if err != nil {
+	if err := manager.init(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Handle sets a callback for a given capability. The callback will be called for every plugin with a given capability.
+// TODO: append instead of set?
+func Handle(capability string, callback func(string, *plugins.Client)) {
+	pluginType := fmt.Sprintf("docker.%s/1", strings.ToLower(capability))
+	manager.handlers[pluginType] = callback
+	if manager.handleLegacy {
+		plugins.Handle(capability, callback)
+	}
+}
+
+func (pm *Manager) get(name string) (*plugin, error) {
+	pm.RLock()
+	defer pm.RUnlock()
+
+	id, nameOk := pm.nameToID[name]
+	if !nameOk {
+		return nil, ErrNotFound(name)
+	}
+
+	p, idOk := pm.plugins[id]
+	if !idOk {
+		return nil, ErrNotFound(name)
+	}
+
+	return p, nil
+}
+
+// FindWithCapability returns a list of plugins matching the given capability.
+func FindWithCapability(capability string) ([]Plugin, error) {
+	handleLegacy := true
+	result := make([]Plugin, 0, 1)
+	if manager != nil {
+		handleLegacy = manager.handleLegacy
+		manager.RLock()
+		defer manager.RUnlock()
+	pluginLoop:
+		for _, p := range manager.plugins {
+			for _, typ := range p.PluginObj.Manifest.Interface.Types {
+				if typ.Capability != capability || typ.Prefix != "docker" {
+					continue pluginLoop
+				}
+			}
+			result = append(result, p)
+		}
+	}
+	if handleLegacy {
+		pl, err := plugins.GetAll(capability)
+		if err != nil {
+			return nil, fmt.Errorf("legacy plugin: %v", err)
+		}
+		for _, p := range pl {
+			if _, ok := manager.nameToID[p.Name()]; !ok {
+				result = append(result, p)
+			}
+		}
+	}
+	return result, nil
+}
+
+// LookupWithCapability returns a plugin matching the given name and capability.
+func LookupWithCapability(name, capability string) (Plugin, error) {
+	var (
+		p   *plugin
+		err error
+	)
+	handleLegacy := true
+	if manager != nil {
+		fullName := name
+		if named, err := reference.ParseNamed(fullName); err == nil { // FIXME: validate
+			if reference.IsNameOnly(named) {
+				named = reference.WithDefaultTag(named)
+			}
+			ref, ok := named.(reference.NamedTagged)
+			if !ok {
+				return nil, fmt.Errorf("invalid name: %s", named.String())
+			}
+			fullName = ref.String()
+		}
+		p, err = manager.get(fullName)
+		if err != nil {
+			if _, ok := err.(ErrNotFound); !ok {
+				return nil, err
+			}
+			handleLegacy = manager.handleLegacy
+		} else {
+			handleLegacy = false
+		}
+	}
+	if handleLegacy {
+		p, err := plugins.Get(name, capability)
+		if err != nil {
+			return nil, fmt.Errorf("legacy plugin: %v", err)
+		}
+		return p, nil
+	} else if err != nil {
 		return nil, err
 	}
 
-	manager.cMap = make(map[*v2.Plugin]*controller)
-	if err := manager.reload(); err != nil {
-		return nil, errors.Wrap(err, "failed to restore plugins")
+	capability = strings.ToLower(capability)
+	for _, typ := range p.PluginObj.Manifest.Interface.Types {
+		if typ.Capability == capability && typ.Prefix == "docker" {
+			return p, nil
+		}
 	}
-	return manager, nil
-}
-
-func (pm *Manager) tmpDir() string {
-	return filepath.Join(pm.config.Root, "tmp")
+	return nil, ErrInadequateCapability{name, capability}
 }
 
 // StateChanged updates plugin internals using libcontainerd events.
@@ -125,137 +259,155 @@ func (pm *Manager) StateChanged(id string, e libcontainerd.StateInfo) error {
 
 	switch e.State {
 	case libcontainerd.StateExit:
-		p, err := pm.config.Store.GetV2Plugin(id)
-		if err != nil {
-			return err
-		}
-
-		pm.mu.RLock()
-		c := pm.cMap[p]
-
-		if c.exitChan != nil {
-			close(c.exitChan)
-		}
-		restart := c.restart
-		pm.mu.RUnlock()
-
-		os.RemoveAll(filepath.Join(pm.config.ExecRoot, id))
-
-		if p.PropagatedMount != "" {
-			if err := mount.Unmount(p.PropagatedMount); err != nil {
-				logrus.Warnf("Could not unmount %s: %v", p.PropagatedMount, err)
+		var shutdown bool
+		pm.RLock()
+		shutdown = pm.shutdown
+		pm.RUnlock()
+		if shutdown {
+			pm.RLock()
+			p, idOk := pm.plugins[id]
+			pm.RUnlock()
+			if !idOk {
+				return ErrNotFound(id)
 			}
-		}
-
-		if restart {
-			pm.enable(p, c, true)
+			close(p.exitChan)
 		}
 	}
 
 	return nil
 }
 
-func (pm *Manager) reload() error { // todo: restore
-	dir, err := ioutil.ReadDir(pm.config.Root)
+// AttachStreams attaches io streams to the plugin
+func (pm *Manager) AttachStreams(id string, iop libcontainerd.IOPipe) error {
+	iop.Stdin.Close()
+
+	logger := logrus.New()
+	logger.Hooks.Add(logHook{id})
+	// TODO: cache writer per id
+	w := logger.Writer()
+	go func() {
+		io.Copy(w, iop.Stdout)
+	}()
+	go func() {
+		// TODO: update logrus and use logger.WriterLevel
+		io.Copy(w, iop.Stderr)
+	}()
+	return nil
+}
+
+func (pm *Manager) init() error {
+	dt, err := os.Open(filepath.Join(pm.libRoot, "plugins.json"))
 	if err != nil {
-		return errors.Wrapf(err, "failed to read %v", pm.config.Root)
-	}
-	plugins := make(map[string]*v2.Plugin)
-	for _, v := range dir {
-		if validFullID.MatchString(v.Name()) {
-			p, err := pm.loadPlugin(v.Name())
-			if err != nil {
-				return err
-			}
-			plugins[p.GetID()] = p
+		if os.IsNotExist(err) {
+			return nil
 		}
+		return err
+	}
+	defer dt.Close()
+
+	if err := json.NewDecoder(dt).Decode(&pm.plugins); err != nil {
+		return err
 	}
 
-	pm.config.Store.SetAll(plugins)
-
-	var wg sync.WaitGroup
-	wg.Add(len(plugins))
-	for _, p := range plugins {
-		c := &controller{} // todo: remove this
-		pm.cMap[p] = c
-		go func(p *v2.Plugin) {
-			defer wg.Done()
+	var group sync.WaitGroup
+	group.Add(len(pm.plugins))
+	for _, p := range pm.plugins {
+		go func(p *plugin) {
+			defer group.Done()
 			if err := pm.restorePlugin(p); err != nil {
 				logrus.Errorf("failed to restore plugin '%s': %s", p.Name(), err)
 				return
 			}
 
-			if p.Rootfs != "" {
-				p.Rootfs = filepath.Join(pm.config.Root, p.PluginObj.ID, "rootfs")
-			}
-
-			// We should only enable rootfs propagation for certain plugin types that need it.
-			for _, typ := range p.PluginObj.Config.Interface.Types {
-				if (typ.Capability == "volumedriver" || typ.Capability == "graphdriver") && typ.Prefix == "docker" && strings.HasPrefix(typ.Version, "1.") {
-					if p.PluginObj.Config.PropagatedMount != "" {
-						// TODO: sanitize PropagatedMount and prevent breakout
-						p.PropagatedMount = filepath.Join(p.Rootfs, p.PluginObj.Config.PropagatedMount)
-						if err := os.MkdirAll(p.PropagatedMount, 0755); err != nil {
-							logrus.Errorf("failed to create PropagatedMount directory at %s: %v", p.PropagatedMount, err)
-							return
-						}
-					}
-				}
-			}
-
-			pm.save(p)
-			requiresManualRestore := !pm.config.LiveRestoreEnabled && p.IsEnabled()
+			pm.Lock()
+			pm.nameToID[p.Name()] = p.PluginObj.ID
+			requiresManualRestore := !pm.liveRestore && p.PluginObj.Active
+			pm.Unlock()
 
 			if requiresManualRestore {
 				// if liveRestore is not enabled, the plugin will be stopped now so we should enable it
-				if err := pm.enable(p, c, true); err != nil {
+				if err := pm.enable(p, true); err != nil {
 					logrus.Errorf("failed to enable plugin '%s': %s", p.Name(), err)
 				}
 			}
 		}(p)
 	}
-	wg.Wait()
-	return nil
+	group.Wait()
+	return pm.save()
 }
 
-func (pm *Manager) loadPlugin(id string) (*v2.Plugin, error) {
-	p := filepath.Join(pm.config.Root, id, configFileName)
-	dt, err := ioutil.ReadFile(p)
+func (pm *Manager) initPlugin(p *plugin) error {
+	dt, err := os.Open(filepath.Join(pm.libRoot, p.PluginObj.ID, "manifest.json"))
 	if err != nil {
-		return nil, errors.Wrapf(err, "error reading %v", p)
-	}
-	var plugin v2.Plugin
-	if err := json.Unmarshal(dt, &plugin); err != nil {
-		return nil, errors.Wrapf(err, "error decoding %v", p)
-	}
-	return &plugin, nil
-}
-
-func (pm *Manager) save(p *v2.Plugin) error {
-	pluginJSON, err := json.Marshal(p)
-	if err != nil {
-		return errors.Wrap(err, "failed to marshal plugin json")
-	}
-	if err := ioutils.AtomicWriteFile(filepath.Join(pm.config.Root, p.GetID(), configFileName), pluginJSON, 0600); err != nil {
 		return err
 	}
-	return nil
-}
-
-// GC cleans up unrefrenced blobs. This is recommended to run in a goroutine
-func (pm *Manager) GC() {
-	pm.muGC.Lock()
-	defer pm.muGC.Unlock()
-
-	whitelist := make(map[digest.Digest]struct{})
-	for _, p := range pm.config.Store.GetAll() {
-		whitelist[p.Config] = struct{}{}
-		for _, b := range p.Blobsums {
-			whitelist[b] = struct{}{}
-		}
+	err = json.NewDecoder(dt).Decode(&p.PluginObj.Manifest)
+	dt.Close()
+	if err != nil {
+		return err
 	}
 
-	pm.blobStore.gc(whitelist)
+	p.PluginObj.Config.Mounts = make([]types.PluginMount, len(p.PluginObj.Manifest.Mounts))
+	for i, mount := range p.PluginObj.Manifest.Mounts {
+		p.PluginObj.Config.Mounts[i] = mount
+	}
+	p.PluginObj.Config.Env = make([]string, 0, len(p.PluginObj.Manifest.Env))
+	for _, env := range p.PluginObj.Manifest.Env {
+		if env.Value != nil {
+			p.PluginObj.Config.Env = append(p.PluginObj.Config.Env, fmt.Sprintf("%s=%s", env.Name, *env.Value))
+		}
+	}
+	copy(p.PluginObj.Config.Args, p.PluginObj.Manifest.Args.Value)
+
+	f, err := os.Create(filepath.Join(pm.libRoot, p.PluginObj.ID, "plugin-config.json"))
+	if err != nil {
+		return err
+	}
+	err = json.NewEncoder(f).Encode(&p.PluginObj.Config)
+	f.Close()
+	return err
+}
+
+func (pm *Manager) remove(p *plugin, force bool) error {
+	if p.PluginObj.Active {
+		if !force {
+			return fmt.Errorf("plugin %s is active", p.Name())
+		}
+		if err := pm.disable(p); err != nil {
+			logrus.Errorf("failed to disable plugin '%s': %s", p.Name(), err)
+		}
+	}
+	pm.Lock() // fixme: lock single record
+	defer pm.Unlock()
+	delete(pm.plugins, p.PluginObj.ID)
+	delete(pm.nameToID, p.Name())
+	pm.save()
+	return os.RemoveAll(filepath.Join(pm.libRoot, p.PluginObj.ID))
+}
+
+func (pm *Manager) set(p *plugin, args []string) error {
+	m := make(map[string]string, len(args))
+	for _, arg := range args {
+		i := strings.Index(arg, "=")
+		if i < 0 {
+			return fmt.Errorf("no equal sign '=' found in %s", arg)
+		}
+		m[arg[:i]] = arg[i+1:]
+	}
+	return errors.New("not implemented")
+}
+
+// fixme: not safe
+func (pm *Manager) save() error {
+	filePath := filepath.Join(pm.libRoot, "plugins.json")
+
+	jsonData, err := json.Marshal(pm.plugins)
+	if err != nil {
+		logrus.Debugf("failure in json.Marshal: %v", err)
+		return err
+	}
+	ioutils.AtomicWriteFile(filePath, jsonData, 0600)
+	return nil
 }
 
 type logHook struct{ id string }
@@ -269,54 +421,39 @@ func (l logHook) Fire(entry *logrus.Entry) error {
 	return nil
 }
 
-func attachToLog(id string) func(libcontainerd.IOPipe) error {
-	return func(iop libcontainerd.IOPipe) error {
-		iop.Stdin.Close()
-
-		logger := logrus.New()
-		logger.Hooks.Add(logHook{id})
-		// TODO: cache writer per id
-		w := logger.Writer()
-		go func() {
-			io.Copy(w, iop.Stdout)
-		}()
-		go func() {
-			// TODO: update logrus and use logger.WriterLevel
-			io.Copy(w, iop.Stderr)
-		}()
-		return nil
+func computePrivileges(m *types.PluginManifest) types.PluginPrivileges {
+	var privileges types.PluginPrivileges
+	if m.Network.Type != "null" && m.Network.Type != "bridge" {
+		privileges = append(privileges, types.PluginPrivilege{
+			Name:        "network",
+			Description: "",
+			Value:       []string{m.Network.Type},
+		})
 	}
-}
-
-func validatePrivileges(requiredPrivileges, privileges types.PluginPrivileges) error {
-	// todo: make a better function that doesn't check order
-	if !reflect.DeepEqual(privileges, requiredPrivileges) {
-		return errors.New("incorrect privileges")
+	for _, mount := range m.Mounts {
+		if mount.Source != nil {
+			privileges = append(privileges, types.PluginPrivilege{
+				Name:        "mount",
+				Description: "",
+				Value:       []string{*mount.Source},
+			})
+		}
 	}
-	return nil
-}
-
-func configToRootFS(c []byte) (*image.RootFS, error) {
-	var pluginConfig types.PluginConfig
-	if err := json.Unmarshal(c, &pluginConfig); err != nil {
-		return nil, err
+	for _, device := range m.Devices {
+		if device.Path != nil {
+			privileges = append(privileges, types.PluginPrivilege{
+				Name:        "device",
+				Description: "",
+				Value:       []string{*device.Path},
+			})
+		}
 	}
-	// validation for empty rootfs is in distribution code
-	if pluginConfig.Rootfs == nil {
-		return nil, nil
+	if len(m.Capabilities) > 0 {
+		privileges = append(privileges, types.PluginPrivilege{
+			Name:        "capabilities",
+			Description: "",
+			Value:       m.Capabilities,
+		})
 	}
-
-	return rootFSFromPlugin(pluginConfig.Rootfs), nil
-}
-
-func rootFSFromPlugin(pluginfs *types.PluginConfigRootfs) *image.RootFS {
-	rootFS := image.RootFS{
-		Type:    pluginfs.Type,
-		DiffIDs: make([]layer.DiffID, len(pluginfs.DiffIds)),
-	}
-	for i := range pluginfs.DiffIds {
-		rootFS.DiffIDs[i] = layer.DiffID(pluginfs.DiffIds[i])
-	}
-
-	return &rootFS
+	return privileges
 }

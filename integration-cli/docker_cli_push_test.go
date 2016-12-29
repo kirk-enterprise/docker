@@ -10,12 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docker/distribution/reference"
-	cliconfig "github.com/docker/docker/cli/config"
-	"github.com/docker/docker/pkg/integration"
+	"github.com/docker/docker/cliconfig"
 	"github.com/docker/docker/pkg/integration/checker"
 	"github.com/go-check/check"
 )
@@ -301,7 +299,7 @@ func (s *DockerTrustSuite) TestTrustedPush(c *check.C) {
 	c.Assert(string(out), checker.Contains, "Status: Image is up to date", check.Commentf(out))
 
 	// Assert that we rotated the snapshot key to the server by checking our local keystore
-	contents, err := ioutil.ReadDir(filepath.Join(cliconfig.Dir(), "trust/private/tuf_keys", privateRegistryURL, "dockerclitrusted/pushtest"))
+	contents, err := ioutil.ReadDir(filepath.Join(cliconfig.ConfigDir(), "trust/private/tuf_keys", privateRegistryURL, "dockerclitrusted/pushtest"))
 	c.Assert(err, check.IsNil, check.Commentf("Unable to read local tuf key files"))
 	// Check that we only have 1 key (targets key)
 	c.Assert(contents, checker.HasLen, 1)
@@ -438,7 +436,7 @@ func (s *DockerTrustSuite) TestTrustedPushWithExpiredSnapshot(c *check.C) {
 	// Snapshots last for three years. This should be expired
 	fourYearsLater := time.Now().Add(time.Hour * 24 * 365 * 4)
 
-	integration.RunAtDifferentDate(fourYearsLater, func() {
+	runAtDifferentDate(fourYearsLater, func() {
 		// Push with wrong passphrases
 		pushCmd = exec.Command(dockerBinary, "push", repoName)
 		s.trustedCmd(pushCmd)
@@ -465,7 +463,7 @@ func (s *DockerTrustSuite) TestTrustedPushWithExpiredTimestamp(c *check.C) {
 	threeWeeksLater := time.Now().Add(time.Hour * 24 * 21)
 
 	// Should succeed because the server transparently re-signs one
-	integration.RunAtDifferentDate(threeWeeksLater, func() {
+	runAtDifferentDate(threeWeeksLater, func() {
 		pushCmd := exec.Command(dockerBinary, "push", repoName)
 		s.trustedCmd(pushCmd)
 		out, _, err := runCommandWithOutput(pushCmd)
@@ -497,7 +495,7 @@ func (s *DockerTrustSuite) TestTrustedPushWithReleasesDelegationOnly(c *check.C)
 	s.assertTargetNotInRoles(c, repoName, "latest", "targets")
 
 	// Try pull after push
-	os.RemoveAll(filepath.Join(cliconfig.Dir(), "trust"))
+	os.RemoveAll(filepath.Join(cliconfig.ConfigDir(), "trust"))
 
 	pullCmd := exec.Command(dockerBinary, "pull", targetName)
 	s.trustedCmd(pullCmd)
@@ -540,7 +538,7 @@ func (s *DockerTrustSuite) TestTrustedPushSignsAllFirstLevelRolesWeHaveKeysFor(c
 	s.assertTargetNotInRoles(c, repoName, "latest", "targets")
 
 	// Try pull after push
-	os.RemoveAll(filepath.Join(cliconfig.Dir(), "trust"))
+	os.RemoveAll(filepath.Join(cliconfig.ConfigDir(), "trust"))
 
 	// pull should fail because none of these are the releases role
 	pullCmd := exec.Command(dockerBinary, "pull", targetName)
@@ -581,7 +579,7 @@ func (s *DockerTrustSuite) TestTrustedPushSignsForRolesWithKeysAndValidPaths(c *
 	s.assertTargetNotInRoles(c, repoName, "latest", "targets")
 
 	// Try pull after push
-	os.RemoveAll(filepath.Join(cliconfig.Dir(), "trust"))
+	os.RemoveAll(filepath.Join(cliconfig.ConfigDir(), "trust"))
 
 	// pull should fail because none of these are the releases role
 	pullCmd := exec.Command(dockerBinary, "pull", targetName)
@@ -632,26 +630,16 @@ func (s *DockerSuite) TestPushToCentralRegistryUnauthorized(c *check.C) {
 	c.Assert(out, check.Not(checker.Contains), "Retrying")
 }
 
-func getTestTokenService(status int, body string, retries int) *httptest.Server {
-	var mu sync.Mutex
+func getTestTokenService(status int, body string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		if retries > 0 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"errors":[{"code":"UNAVAILABLE","message":"cannot create token at this time"}]}`))
-			retries--
-		} else {
-			w.WriteHeader(status)
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(body))
-		}
-		mu.Unlock()
+		w.WriteHeader(status)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(body))
 	}))
 }
 
 func (s *DockerRegistryAuthTokenSuite) TestPushTokenServiceUnauthResponse(c *check.C) {
-	ts := getTestTokenService(http.StatusUnauthorized, `{"errors": [{"Code":"UNAUTHORIZED", "message": "a message", "detail": null}]}`, 0)
+	ts := getTestTokenService(http.StatusUnauthorized, `{"errors": [{"Code":"UNAUTHORIZED", "message": "a message", "detail": null}]}`)
 	defer ts.Close()
 	s.setupRegistryWithTokenService(c, ts.URL)
 	repoName := fmt.Sprintf("%s/busybox", privateRegistryURL)
@@ -663,7 +651,7 @@ func (s *DockerRegistryAuthTokenSuite) TestPushTokenServiceUnauthResponse(c *che
 }
 
 func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponseUnauthorized(c *check.C) {
-	ts := getTestTokenService(http.StatusUnauthorized, `{"error": "unauthorized"}`, 0)
+	ts := getTestTokenService(http.StatusUnauthorized, `{"error": "unauthorized"}`)
 	defer ts.Close()
 	s.setupRegistryWithTokenService(c, ts.URL)
 	repoName := fmt.Sprintf("%s/busybox", privateRegistryURL)
@@ -676,7 +664,7 @@ func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponse
 }
 
 func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponseError(c *check.C) {
-	ts := getTestTokenService(http.StatusTooManyRequests, `{"errors": [{"code":"TOOMANYREQUESTS","message":"out of tokens"}]}`, 4)
+	ts := getTestTokenService(http.StatusInternalServerError, `{"error": "unexpected"}`)
 	defer ts.Close()
 	s.setupRegistryWithTokenService(c, ts.URL)
 	repoName := fmt.Sprintf("%s/busybox", privateRegistryURL)
@@ -684,13 +672,12 @@ func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponse
 	out, _, err := dockerCmdWithError("push", repoName)
 	c.Assert(err, check.NotNil, check.Commentf(out))
 	c.Assert(out, checker.Contains, "Retrying")
-	c.Assert(out, checker.Not(checker.Contains), "Retrying in 15")
 	split := strings.Split(out, "\n")
-	c.Assert(split[len(split)-2], check.Equals, "toomanyrequests: out of tokens")
+	c.Assert(split[len(split)-2], check.Equals, "received unexpected HTTP status: 500 Internal Server Error")
 }
 
 func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponseUnparsable(c *check.C) {
-	ts := getTestTokenService(http.StatusForbidden, `no way`, 0)
+	ts := getTestTokenService(http.StatusForbidden, `no way`)
 	defer ts.Close()
 	s.setupRegistryWithTokenService(c, ts.URL)
 	repoName := fmt.Sprintf("%s/busybox", privateRegistryURL)
@@ -703,7 +690,7 @@ func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponse
 }
 
 func (s *DockerRegistryAuthTokenSuite) TestPushMisconfiguredTokenServiceResponseNoToken(c *check.C) {
-	ts := getTestTokenService(http.StatusOK, `{"something": "wrong"}`, 0)
+	ts := getTestTokenService(http.StatusOK, `{"something": "wrong"}`)
 	defer ts.Close()
 	s.setupRegistryWithTokenService(c, ts.URL)
 	repoName := fmt.Sprintf("%s/busybox", privateRegistryURL)

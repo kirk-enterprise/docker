@@ -122,17 +122,12 @@ func (d *Driver) Cleanup() error {
 
 // CreateReadWrite creates a layer that is writable for use as a container
 // file system.
-func (d *Driver) CreateReadWrite(id, parent string, opts *graphdriver.CreateOpts) error {
-	return d.Create(id, parent, opts)
+func (d *Driver) CreateReadWrite(id, parent, mountLabel string, storageOpt map[string]string) error {
+	return d.Create(id, parent, mountLabel, storageOpt)
 }
 
 // Create adds a device with a given id and the parent.
-func (d *Driver) Create(id, parent string, opts *graphdriver.CreateOpts) error {
-	var storageOpt map[string]string
-	if opts != nil {
-		storageOpt = opts.StorageOpt
-	}
-
+func (d *Driver) Create(id, parent, mountLabel string, storageOpt map[string]string) error {
 	if err := d.DeviceSet.AddDevice(id, parent, storageOpt); err != nil {
 		return err
 	}

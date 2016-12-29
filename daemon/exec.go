@@ -9,15 +9,15 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/errors"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/exec"
+	"github.com/docker/docker/errors"
 	"github.com/docker/docker/libcontainerd"
 	"github.com/docker/docker/pkg/pools"
 	"github.com/docker/docker/pkg/signal"
 	"github.com/docker/docker/pkg/term"
+	"github.com/docker/engine-api/types"
+	"github.com/docker/engine-api/types/strslice"
 )
 
 // Seconds to wait after sending TERM before trying KILL
@@ -26,7 +26,7 @@ const termProcessTimeout = 10
 func (d *Daemon) registerExecCommand(container *container.Container, config *exec.Config) {
 	// Storing execs in container in order to kill them gracefully whenever the container is stopped or removed.
 	container.ExecCommands.Add(config.ID, config)
-	// Storing execs in daemon for easy access via Engine API.
+	// Storing execs in daemon for easy access via remote API.
 	d.execCommands.Add(config.ID, config)
 }
 
@@ -93,7 +93,7 @@ func (d *Daemon) getActiveContainer(name string) (*container.Container, error) {
 
 // ContainerExecCreate sets up an exec in a running container.
 func (d *Daemon) ContainerExecCreate(name string, config *types.ExecConfig) (string, error) {
-	cntr, err := d.getActiveContainer(name)
+	container, err := d.getActiveContainer(name)
 	if err != nil {
 		return "", err
 	}
@@ -114,26 +114,20 @@ func (d *Daemon) ContainerExecCreate(name string, config *types.ExecConfig) (str
 	execConfig.OpenStdin = config.AttachStdin
 	execConfig.OpenStdout = config.AttachStdout
 	execConfig.OpenStderr = config.AttachStderr
-	execConfig.ContainerID = cntr.ID
+	execConfig.ContainerID = container.ID
 	execConfig.DetachKeys = keys
 	execConfig.Entrypoint = entrypoint
 	execConfig.Args = args
 	execConfig.Tty = config.Tty
 	execConfig.Privileged = config.Privileged
 	execConfig.User = config.User
-
-	linkedEnv, err := d.setupLinkedContainers(cntr)
-	if err != nil {
-		return "", err
-	}
-	execConfig.Env = container.ReplaceOrAppendEnvValues(cntr.CreateDaemonEnvironment(config.Tty, linkedEnv), config.Env)
 	if len(execConfig.User) == 0 {
-		execConfig.User = cntr.Config.User
+		execConfig.User = container.Config.User
 	}
 
-	d.registerExecCommand(cntr, execConfig)
+	d.registerExecCommand(container, execConfig)
 
-	d.LogContainerEvent(cntr, "exec_create: "+execConfig.Entrypoint+" "+strings.Join(execConfig.Args, " "))
+	d.LogContainerEvent(container, "exec_create: "+execConfig.Entrypoint+" "+strings.Join(execConfig.Args, " "))
 
 	return execConfig.ID, nil
 }
@@ -194,14 +188,13 @@ func (d *Daemon) ContainerExecStart(ctx context.Context, name string, stdin io.R
 	}
 
 	if ec.OpenStdin {
-		ec.StreamConfig.NewInputPipes()
+		ec.NewInputPipes()
 	} else {
-		ec.StreamConfig.NewNopInputPipe()
+		ec.NewNopInputPipe()
 	}
 
 	p := libcontainerd.Process{
 		Args:     append([]string{ec.Entrypoint}, ec.Args...),
-		Env:      ec.Env,
 		Terminal: ec.Tty,
 	}
 
@@ -211,13 +204,9 @@ func (d *Daemon) ContainerExecStart(ctx context.Context, name string, stdin io.R
 
 	attachErr := container.AttachStreams(ctx, ec.StreamConfig, ec.OpenStdin, true, ec.Tty, cStdin, cStdout, cStderr, ec.DetachKeys)
 
-	systemPid, err := d.containerd.AddProcess(ctx, c.ID, name, p, ec.InitializeStdio)
-	if err != nil {
+	if err := d.containerd.AddProcess(ctx, c.ID, name, p); err != nil {
 		return err
 	}
-	ec.Lock()
-	ec.Pid = systemPid
-	ec.Unlock()
 
 	select {
 	case <-ctx.Done():

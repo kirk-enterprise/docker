@@ -18,12 +18,11 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/builder"
 	"github.com/docker/docker/pkg/signal"
 	runconfigopts "github.com/docker/docker/runconfig/opts"
+	"github.com/docker/engine-api/types/container"
+	"github.com/docker/engine-api/types/strslice"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -69,22 +68,16 @@ func env(b *Builder, args []string, attributes map[string]bool, original string)
 		// value ==> args[j+1]
 
 		if len(args[j]) == 0 {
-			return errBlankCommandNames("ENV")
+			return fmt.Errorf("ENV names can not be blank")
 		}
+
 		newVar := args[j] + "=" + args[j+1] + ""
 		commitStr += " " + newVar
 
 		gotOne := false
 		for i, envVar := range b.runConfig.Env {
 			envParts := strings.SplitN(envVar, "=", 2)
-			compareFrom := envParts[0]
-			compareTo := args[j]
-			if runtime.GOOS == "windows" {
-				// Case insensitive environment variables on Windows
-				compareFrom = strings.ToUpper(compareFrom)
-				compareTo = strings.ToUpper(compareTo)
-			}
-			if compareFrom == compareTo {
+			if envParts[0] == args[j] {
 				b.runConfig.Env[i] = newVar
 				gotOne = true
 				break
@@ -143,7 +136,7 @@ func label(b *Builder, args []string, attributes map[string]bool, original strin
 		// value ==> args[j+1]
 
 		if len(args[j]) == 0 {
-			return errBlankCommandNames("LABEL")
+			return fmt.Errorf("LABEL names can not be blank")
 		}
 
 		newVar := args[j] + "=" + args[j+1] + ""
@@ -228,7 +221,6 @@ func from(b *Builder, args []string, attributes map[string]bool, original string
 			}
 		}
 	}
-	b.from = image
 
 	return b.processImageFrom(image)
 }
@@ -286,37 +278,7 @@ func workdir(b *Builder, args []string, attributes map[string]bool, original str
 		return err
 	}
 
-	// For performance reasons, we explicitly do a create/mkdir now
-	// This avoids having an unnecessary expensive mount/unmount calls
-	// (on Windows in particular) during each container create.
-	// Prior to 1.13, the mkdir was deferred and not executed at this step.
-	if b.disableCommit {
-		// Don't call back into the daemon if we're going through docker commit --change "WORKDIR /foo".
-		// We've already updated the runConfig and that's enough.
-		return nil
-	}
-	b.runConfig.Image = b.image
-
-	if hit, err := b.probeCache(); err != nil {
-		return err
-	} else if hit {
-		return nil
-	}
-
-	// Actually copy the struct
-	workdirConfig := *b.runConfig
-	workdirConfig.Cmd = strslice.StrSlice(append(getShell(b.runConfig), fmt.Sprintf("#(nop) WORKDIR %s", b.runConfig.WorkingDir)))
-
-	container, err := b.docker.ContainerCreate(types.ContainerCreateConfig{Config: &workdirConfig})
-	if err != nil {
-		return err
-	}
-	b.tmpContainers[container.ID] = struct{}{}
-	if err := b.docker.ContainerCreateWorkdir(container.ID); err != nil {
-		return err
-	}
-
-	return b.commit(container.ID, b.runConfig.Cmd, "WORKDIR "+b.runConfig.WorkingDir)
+	return b.commit("", b.runConfig.Cmd, fmt.Sprintf("WORKDIR %v", b.runConfig.WorkingDir))
 }
 
 // RUN some command yo
@@ -384,8 +346,8 @@ func run(b *Builder, args []string, attributes map[string]bool, original string)
 			// the entire file (see 'leftoverArgs' processing in evaluator.go )
 			continue
 		}
-		if _, ok := configEnv[key]; !ok && val != nil {
-			cmdBuildEnv = append(cmdBuildEnv, fmt.Sprintf("%s=%s", key, *val))
+		if _, ok := configEnv[key]; !ok {
+			cmdBuildEnv = append(cmdBuildEnv, fmt.Sprintf("%s=%s", key, val))
 		}
 	}
 
@@ -493,7 +455,7 @@ func parseOptInterval(f *Flag) (time.Duration, error) {
 //
 func healthcheck(b *Builder, args []string, attributes map[string]bool, original string) error {
 	if len(args) == 0 {
-		return errAtLeastOneArgument("HEALTHCHECK")
+		return fmt.Errorf("HEALTHCHECK requires an argument")
 	}
 	typ := strings.ToUpper(args[0])
 	args = args[1:]
@@ -567,7 +529,11 @@ func healthcheck(b *Builder, args []string, attributes map[string]bool, original
 		b.runConfig.Healthcheck = &healthcheck
 	}
 
-	return b.commit("", b.runConfig.Cmd, fmt.Sprintf("HEALTHCHECK %q", b.runConfig.Healthcheck))
+	if err := b.commit("", b.runConfig.Cmd, fmt.Sprintf("HEALTHCHECK %q", b.runConfig.Healthcheck)); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ENTRYPOINT /usr/sbin/nginx
@@ -688,7 +654,7 @@ func volume(b *Builder, args []string, attributes map[string]bool, original stri
 	for _, v := range args {
 		v = strings.TrimSpace(v)
 		if v == "" {
-			return fmt.Errorf("VOLUME specified can not be an empty string")
+			return fmt.Errorf("Volume specified can not be an empty string")
 		}
 		b.runConfig.Volumes[v] = struct{}{}
 	}
@@ -703,7 +669,7 @@ func volume(b *Builder, args []string, attributes map[string]bool, original stri
 // Set the signal that will be used to kill the container.
 func stopSignal(b *Builder, args []string, attributes map[string]bool, original string) error {
 	if len(args) != 1 {
-		return errExactlyOneArgument("STOPSIGNAL")
+		return fmt.Errorf("STOPSIGNAL requires exactly one argument")
 	}
 
 	sig := args[0]
@@ -723,12 +689,12 @@ func stopSignal(b *Builder, args []string, attributes map[string]bool, original 
 // Dockerfile author may optionally set a default value of this variable.
 func arg(b *Builder, args []string, attributes map[string]bool, original string) error {
 	if len(args) != 1 {
-		return errExactlyOneArgument("ARG")
+		return fmt.Errorf("ARG requires exactly one argument definition")
 	}
 
 	var (
 		name       string
-		newValue   string
+		value      string
 		hasDefault bool
 	)
 
@@ -741,11 +707,11 @@ func arg(b *Builder, args []string, attributes map[string]bool, original string)
 	if strings.Contains(arg, "=") {
 		parts := strings.SplitN(arg, "=", 2)
 		if len(parts[0]) == 0 {
-			return errBlankCommandNames("ARG")
+			return fmt.Errorf("ARG names can not be blank")
 		}
 
 		name = parts[0]
-		newValue = parts[1]
+		value = parts[1]
 		hasDefault = true
 	} else {
 		name = arg
@@ -756,12 +722,9 @@ func arg(b *Builder, args []string, attributes map[string]bool, original string)
 
 	// If there is a default value associated with this arg then add it to the
 	// b.buildArgs if one is not already passed to the builder. The args passed
-	// to builder override the default value of 'arg'. Note that a 'nil' for
-	// a value means that the user specified "--build-arg FOO" and "FOO" wasn't
-	// defined as an env var - and in that case we DO want to use the default
-	// value specified in the ARG cmd.
-	if baValue, ok := b.options.BuildArgs[name]; (!ok || baValue == nil) && hasDefault {
-		b.options.BuildArgs[name] = &newValue
+	// to builder override the default value of 'arg'.
+	if _, ok := b.options.BuildArgs[name]; !ok && hasDefault {
+		b.options.BuildArgs[name] = value
 	}
 
 	return b.commit("", b.runConfig.Cmd, fmt.Sprintf("ARG %s", arg))
@@ -799,10 +762,6 @@ func errExactlyOneArgument(command string) error {
 
 func errAtLeastTwoArguments(command string) error {
 	return fmt.Errorf("%s requires at least two arguments", command)
-}
-
-func errBlankCommandNames(command string) error {
-	return fmt.Errorf("%s names can not be blank", command)
 }
 
 func errTooManyArguments(command string) error {
