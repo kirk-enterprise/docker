@@ -38,7 +38,10 @@ func Int64ValueOrZero(r *http.Request, k string) int64 {
 func Int64ValueOrDefault(r *http.Request, field string, def int64) (int64, error) {
 	if r.Form.Get(field) != "" {
 		value, err := strconv.ParseInt(r.Form.Get(field), 10, 64)
-		return value, err
+		if err != nil {
+			return value, err
+		}
+		return value, nil
 	}
 	return def, nil
 }

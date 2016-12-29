@@ -61,7 +61,7 @@ func SetEscapeToken(s string, d *Directive) error {
 		return fmt.Errorf("invalid ESCAPE '%s'. Must be ` or \\", s)
 	}
 	d.EscapeToken = rune(s[0])
-	d.LineContinuationRegex = regexp.MustCompile(`\` + s + `$`)
+	d.LineContinuationRegex = regexp.MustCompile(`\` + s + `[ \t]*$`)
 	return nil
 }
 
@@ -94,8 +94,8 @@ func init() {
 	}
 }
 
-// ParseLine parses a line and returns the remainder.
-func ParseLine(line string, d *Directive, ignoreCont bool) (string, *Node, error) {
+// ParseLine parse a line and return the remainder.
+func ParseLine(line string, d *Directive) (string, *Node, error) {
 	// Handle the parser directive '# escape=<char>. Parser directives must precede
 	// any builder instruction or other comments, and cannot be repeated.
 	if d.LookingForDirectives {
@@ -122,7 +122,7 @@ func ParseLine(line string, d *Directive, ignoreCont bool) (string, *Node, error
 		return "", nil, nil
 	}
 
-	if !ignoreCont && d.LineContinuationRegex.MatchString(line) {
+	if d.LineContinuationRegex.MatchString(line) {
 		line = d.LineContinuationRegex.ReplaceAllString(line, "")
 		return line, nil, nil
 	}
@@ -165,7 +165,7 @@ func Parse(rwc io.Reader, d *Directive) (*Node, error) {
 		}
 		scannedLine := strings.TrimLeftFunc(string(scannedBytes), unicode.IsSpace)
 		currentLine++
-		line, child, err := ParseLine(scannedLine, d, false)
+		line, child, err := ParseLine(scannedLine, d)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +180,7 @@ func Parse(rwc io.Reader, d *Directive) (*Node, error) {
 					continue
 				}
 
-				line, child, err = ParseLine(line+newline, d, false)
+				line, child, err = ParseLine(line+newline, d)
 				if err != nil {
 					return nil, err
 				}
@@ -190,13 +190,7 @@ func Parse(rwc io.Reader, d *Directive) (*Node, error) {
 				}
 			}
 			if child == nil && line != "" {
-				// When we call ParseLine we'll pass in 'true' for
-				// the ignoreCont param if we're at the EOF. This will
-				// prevent the func from returning immediately w/o
-				// parsing the line thinking that there's more input
-				// to come.
-
-				_, child, err = ParseLine(line, d, scanner.Err() == nil)
+				_, child, err = ParseLine(line, d)
 				if err != nil {
 					return nil, err
 				}

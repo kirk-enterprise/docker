@@ -123,7 +123,7 @@ However, there might be a way to implement that feature *on top of* Docker.
       group is for contributors and other people contributing to the Docker project.
       You can join them without a google account by sending an email to 
       <a href="mailto:docker-dev+subscribe@googlegroups.com">docker-dev+subscribe@googlegroups.com</a>.
-      After receiving the join-request message, you can simply reply to that to confirm the subscription.
+      After receiving the join-request message, you can simply reply to that to confirm the subscribtion.
     </td>
   </tr>
   <tr>
@@ -234,9 +234,8 @@ Developer Certificate of Origin
 Version 1.1
 
 Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
-1 Letterman Drive
-Suite D4700
-San Francisco, CA, 94129
+660 York Street, Suite 102,
+San Francisco, CA 94110 USA
 
 Everyone is permitted to copy and distribute verbatim copies of this
 license document, but changing it is not allowed.

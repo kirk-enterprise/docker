@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/pkg/integration"
 	"github.com/docker/docker/pkg/integration/checker"
 	"github.com/docker/docker/pkg/jsonlog"
 	"github.com/go-check/check"
@@ -118,28 +117,22 @@ func (s *DockerSuite) TestLogsTail(c *check.C) {
 	id := strings.TrimSpace(out)
 	dockerCmd(c, "wait", id)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "0", id)
-	lines := strings.Split(out, "\n")
-	c.Assert(lines, checker.HasLen, 1)
-
 	out, _ = dockerCmd(c, "logs", "--tail", "5", id)
-	lines = strings.Split(out, "\n")
+
+	lines := strings.Split(out, "\n")
+
 	c.Assert(lines, checker.HasLen, 6)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "99", id)
-	lines = strings.Split(out, "\n")
-	c.Assert(lines, checker.HasLen, 100)
-
 	out, _ = dockerCmd(c, "logs", "--tail", "all", id)
-	lines = strings.Split(out, "\n")
-	c.Assert(lines, checker.HasLen, testLen+1)
 
-	out, _ = dockerCmd(c, "logs", "--tail", "-1", id)
 	lines = strings.Split(out, "\n")
+
 	c.Assert(lines, checker.HasLen, testLen+1)
 
 	out, _, _ = dockerCmdWithStdoutStderr(c, "logs", "--tail", "random", id)
+
 	lines = strings.Split(out, "\n")
+
 	c.Assert(lines, checker.HasLen, testLen+1)
 }
 
@@ -254,11 +247,11 @@ func (s *DockerSuite) TestLogsFollowSlowStdoutConsumer(c *check.C) {
 	c.Assert(logCmd.Start(), checker.IsNil)
 
 	// First read slowly
-	bytes1, err := integration.ConsumeWithSpeed(stdout, 10, 50*time.Millisecond, stopSlowRead)
+	bytes1, err := consumeWithSpeed(stdout, 10, 50*time.Millisecond, stopSlowRead)
 	c.Assert(err, checker.IsNil)
 
 	// After the container has finished we can continue reading fast
-	bytes2, err := integration.ConsumeWithSpeed(stdout, 32*1024, 0, nil)
+	bytes2, err := consumeWithSpeed(stdout, 32*1024, 0, nil)
 	c.Assert(err, checker.IsNil)
 
 	actual := bytes1 + bytes2
@@ -311,8 +304,8 @@ func (s *DockerSuite) TestLogsFollowGoroutinesNoOutput(c *check.C) {
 func (s *DockerSuite) TestLogsCLIContainerNotFound(c *check.C) {
 	name := "testlogsnocontainer"
 	out, _, _ := dockerCmdWithError("logs", name)
-	message := fmt.Sprintf("No such container: %s\n", name)
-	c.Assert(out, checker.Contains, message)
+	message := fmt.Sprintf("Error: No such container: %s\n", name)
+	c.Assert(out, checker.Equals, message)
 }
 
 func (s *DockerSuite) TestLogsWithDetails(c *check.C) {
