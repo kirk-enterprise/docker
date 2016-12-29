@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/docker/docker/pkg/integration"
 	"github.com/docker/docker/pkg/integration/checker"
 	"github.com/docker/docker/runconfig"
 	"github.com/go-check/check"
@@ -97,10 +99,10 @@ func (s *DockerSuite) TestLinksInspectLinksStarted(c *check.C) {
 	dockerCmd(c, "run", "-d", "--name", "testinspectlink", "--link", "container1:alias1", "--link", "container2:alias2", "busybox", "top")
 	links := inspectFieldJSON(c, "testinspectlink", "HostConfig.Links")
 
-	err := unmarshalJSON([]byte(links), &result)
+	err := json.Unmarshal([]byte(links), &result)
 	c.Assert(err, checker.IsNil)
 
-	output := convertSliceOfStringsToMap(result)
+	output := integration.ConvertSliceOfStringsToMap(result)
 
 	c.Assert(output, checker.DeepEquals, expected)
 }
@@ -116,10 +118,10 @@ func (s *DockerSuite) TestLinksInspectLinksStopped(c *check.C) {
 	dockerCmd(c, "run", "-d", "--name", "testinspectlink", "--link", "container1:alias1", "--link", "container2:alias2", "busybox", "true")
 	links := inspectFieldJSON(c, "testinspectlink", "HostConfig.Links")
 
-	err := unmarshalJSON([]byte(links), &result)
+	err := json.Unmarshal([]byte(links), &result)
 	c.Assert(err, checker.IsNil)
 
-	output := convertSliceOfStringsToMap(result)
+	output := integration.ConvertSliceOfStringsToMap(result)
 
 	c.Assert(output, checker.DeepEquals, expected)
 }
