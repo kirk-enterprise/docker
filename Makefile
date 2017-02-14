@@ -137,6 +137,8 @@ validate: build ## validate DCO, Seccomp profile generation, gofmt,\n./pkg/ isol
 
 win: build ## cross build the binary for windows
 	$(DOCKER_RUN_DOCKER) hack/make.sh win
+dynbinary:
+	$(DOCKER_RUN_DOCKER) hack/make.sh dynbinary
 
 .PHONY: swagger-gen
 swagger-gen:
