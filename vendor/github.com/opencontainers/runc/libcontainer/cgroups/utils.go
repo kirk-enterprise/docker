@@ -54,8 +54,12 @@ func FindCgroupMountpoint(subsystem string) (string, error) {
 	// We are not using mount.GetMounts() because it's super-inefficient,
 	// parsing it directly sped up x10 times because of not using Sscanf.
 	// It was one of two major performance drawbacks in container start.
-	if !isSubsystemAvailable(subsystem) {
-		return "", NewNotFoundError(subsystem)
+	if subsystem == "memory" || subsystem == "blkio" {
+		// cgroup v2 do not check isSubsystemAvailable
+	} else {
+		if !isSubsystemAvailable(subsystem) {
+			return "", NewNotFoundError(subsystem)
+		}
 	}
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
@@ -84,8 +88,12 @@ func FindCgroupMountpoint(subsystem string) (string, error) {
 }
 
 func FindCgroupMountpointAndRoot(subsystem string) (string, string, error) {
-	if !isSubsystemAvailable(subsystem) {
-		return "", "", NewNotFoundError(subsystem)
+	if subsystem == "memory" || subsystem == "blkio" {
+		// cgroup v2 do not check isSubsystemAvailable
+	} else {
+		if !isSubsystemAvailable(subsystem) {
+			return "", "", NewNotFoundError(subsystem)
+		}
 	}
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
