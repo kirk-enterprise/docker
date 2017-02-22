@@ -333,6 +333,8 @@ func (container *Container) UpdateContainer(hostConfig *containertypes.HostConfi
 		container.HostConfig.RestartPolicy = hostConfig.RestartPolicy
 	}
 
+	container.HostConfig.Binds = hostConfig.Binds
+
 	if err := container.ToDisk(); err != nil {
 		logrus.Errorf("Error saving updated container: %v", err)
 		return err

@@ -694,6 +694,7 @@ func (daemon *Daemon) createSpec(c *container.Container) (*specs.Spec, error) {
 		return nil, err
 	}
 
+	fmt.Printf("nimu %#v\n", c)
 	ms, err := daemon.setupMounts(c)
 	if err != nil {
 		return nil, err
