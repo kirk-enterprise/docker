@@ -150,7 +150,6 @@ func (daemon *Daemon) containerStart(container *container.Container, checkpoint 
 	if err != nil {
 		return err
 	}
-	fmt.Printf("nimei2 %#v\n", spec)
 
 	createOptions, err := daemon.getLibcontainerdCreateOptions(container)
 	if err != nil {

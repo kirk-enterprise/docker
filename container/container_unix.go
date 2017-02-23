@@ -333,7 +333,23 @@ func (container *Container) UpdateContainer(hostConfig *containertypes.HostConfi
 		container.HostConfig.RestartPolicy = hostConfig.RestartPolicy
 	}
 
-	container.HostConfig.Binds = hostConfig.Binds
+	// update the container.MountPoints according to the binds
+	if hostConfig.Binds != nil {
+		container.HostConfig.Binds = hostConfig.Binds
+
+		mountPoints := map[string]*volume.MountPoint{}
+
+		for _, b := range hostConfig.Binds {
+			bind, err := volume.ParseMountRaw(b, hostConfig.VolumeDriver)
+			if err != nil {
+				return err
+			}
+
+			mountPoints[bind.Destination] = bind
+		}
+
+		container.MountPoints = mountPoints
+	}
 
 	if err := container.ToDisk(); err != nil {
 		logrus.Errorf("Error saving updated container: %v", err)

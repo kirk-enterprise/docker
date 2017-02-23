@@ -153,6 +153,7 @@ func (container *Container) ToDisk() error {
 	}
 
 	jsonSource, err := ioutils.NewAtomicFileWriter(pth, 0644)
+
 	if err != nil {
 		return err
 	}

@@ -337,7 +337,6 @@ func (s *containerRouter) postContainerUpdate(ctx context.Context, w http.Respon
 	if err := decoder.Decode(&updateConfig); err != nil {
 		return err
 	}
-	fmt.Println("nimei", updateConfig)
 
 	hostConfig := &container.HostConfig{
 		Resources:     updateConfig.Resources,
