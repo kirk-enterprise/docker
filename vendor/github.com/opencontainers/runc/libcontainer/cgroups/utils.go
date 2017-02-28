@@ -23,7 +23,7 @@ const (
 
 func checkIfCgroupV2(subsystem, txt string) bool {
 	fields := strings.Split(txt, " ")
-	if len(fields) != 10 {
+	if len(fields) < 5 {
 		return false
 	}
 	cgroupType := fields[len(fields)-3]
