@@ -6,7 +6,13 @@
 DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 cd $DIR
 
-STORAGE_DISK="[[.STORAGE_DEV]]" # e.g. /dev/sdc
+source env.sh
+
+if [ -z "$STORAGE_DISK" ]; then
+    echo "error: STORAGE_DISK missing, please configure it in env.sh"
+    exit -1
+fi
+
 CONFIGFILE="./docker.conf"
 VG=docker
 POOL=thinpool
